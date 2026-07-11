@@ -1,0 +1,29 @@
+:root {
+  --ink: #1d2733;
+  --muted: #66707d;
+  --paper: #f7f5f0;
+  --accent: #2f6f6d;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+header {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid #ddd6c8;
+}
+.brand {
+  font-weight: bold;
+  font-size: 1.25rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+main {
+  max-width: 42rem;
+  margin: 3rem auto;
+  padding: 0 1.5rem;
+}
+.muted { color: var(--muted); }
