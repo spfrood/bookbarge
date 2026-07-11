@@ -14,3 +14,9 @@ venv/
 *.db
 *.sqlite3
 *.log
+
+# Audio artifacts (personal voice data + test output — never commit)
+*.wav
+*.mp3
+*.m4b
+sweep*/
