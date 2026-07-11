@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Bookbarge{% endblock %}
+{% block content %}
+<section>
+  <h2>Your projects</h2>
+  <p class="muted">Signed in as {{ user['email'] }}.</p>
+  <p>No projects yet &mdash; project creation arrives in the next phase.</p>
+  <form method="post" action="/logout">
+    <button type="submit" class="secondary">Log out</button>
+  </form>
+</section>
+{% endblock %}

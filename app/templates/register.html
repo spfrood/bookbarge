@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Register — Bookbarge{% endblock %}
+{% block content %}
+{% include "partials/beta_notice.html" %}
+<section class="auth-form">
+  <h2>Register</h2>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/register">
+    <label>Email <input type="email" name="email" required autocomplete="email"></label>
+    <label>Password <input type="password" name="password" required
+           minlength="8" autocomplete="new-password"></label>
+    <button type="submit">Create account</button>
+  </form>
+  <p class="muted">Already have an account? <a href="/login">Log in</a></p>
+</section>
+{% endblock %}

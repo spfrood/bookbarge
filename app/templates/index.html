@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="placeholder">
-  <h1>Bookbarge</h1>
-  <p>Book &rarr; audiobook via AI voice cloning.</p>
-  <p class="muted">Skeleton build &mdash; features arrive phase by phase.</p>
+{% include "partials/beta_notice.html" %}
+<section class="cta">
+  <a class="button" href="/register">Register</a>
+  <a class="button secondary" href="/login">Log in</a>
 </section>
 {% endblock %}
