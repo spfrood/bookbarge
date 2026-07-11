@@ -89,6 +89,8 @@ table.listing th, table.listing td {
 .inline-form { margin: 0.5rem 0 1.5rem; }
 .inline-form label { display: block; margin: 0.5rem 0; }
 form button.danger { background: #c0392b; }
+button.small { padding: 0.25rem 0.75rem; font-size: 0.9rem; margin-top: 0; }
+button:disabled { background: #b9b2a4; cursor: not-allowed; }
 .error {
   background: #fbe9e7;
   border-left: 3px solid #c0392b;

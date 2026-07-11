@@ -37,6 +37,10 @@ class Settings:
     runpod_endpoint_id = os.environ.get("RUNPOD_ENDPOINT_ID", "")
     session_secret = os.environ.get("SESSION_SECRET", "")
 
+    # Simultaneous RunPod jobs per chapter generation (one chapter at a
+    # time is enforced separately; this is chunk-level parallelism).
+    runpod_concurrency = int(os.environ.get("RUNPOD_CONCURRENCY", "3"))
+
     @property
     def db_path(self) -> Path:
         return self.data_root / "data" / "app.db"

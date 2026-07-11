@@ -24,19 +24,35 @@
   </form>
 
   <h3>Chapters</h3>
+  {% set generating = chapters | selectattr('processing_status', 'equalto', 'generating') | list %}
   {% if chapters %}
-  <table class="listing">
-    <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th></tr>
+  <table class="listing" id="chapters"
+         data-project-id="{{ project['id'] }}"
+         data-generating="{{ 1 if generating else 0 }}">
+    <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th><th></th></tr>
     {% for c in chapters %}
-    <tr>
+    <tr data-chapter-id="{{ c['id'] }}">
       <td>{{ c['chapter_number'] }}</td>
       <td>{{ c['filename'] }}</td>
       <td>{{ c['raw_text'] | length }} chars</td>
-      <td>{{ c['processing_status'] }}</td>
-      <td>{{ '✓' if c['approved'] else '—' }}</td>
+      <td class="js-status">{{ c['processing_status'] }}</td>
+      <td class="js-approved">{{ '✓' if c['approved'] else '—' }}</td>
+      <td>
+        <form method="post"
+              action="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/generate">
+          <button type="submit" class="small"
+                  {{ 'disabled' if not voice or generating else '' }}
+                  title="{{ 'Upload a voice reference first' if not voice
+                            else ('Another chapter is generating' if generating else '') }}">
+            {{ 'Regenerate' if c['processing_status'] in ('ready_for_review', 'error')
+               else 'Generate' }}
+          </button>
+        </form>
+      </td>
     </tr>
     {% endfor %}
   </table>
+  <script src="/static/project.js"></script>
   {% else %}
   <p class="muted">No chapters yet &mdash; upload your book as one
   .txt file per chapter (you can select several at once; they're

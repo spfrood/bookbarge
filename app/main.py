@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db, projects
+from . import auth, db, generation, projects
 from .config import settings
 
 APP_DIR = Path(__file__).resolve().parent
@@ -19,6 +19,9 @@ async def lifespan(app: FastAPI):
     applied = db.migrate()
     if applied:
         print(f"applied migrations: {', '.join(applied)}", flush=True)
+    resumed = generation.resume_orphaned()
+    if resumed:
+        print(f"resumed {resumed} interrupted generation(s)", flush=True)
     yield
 
 
@@ -30,6 +33,7 @@ auth.templates = templates
 projects.templates = templates
 app.include_router(auth.router)
 app.include_router(projects.router)
+app.include_router(generation.router)
 
 
 @app.exception_handler(auth._RedirectToLogin)
