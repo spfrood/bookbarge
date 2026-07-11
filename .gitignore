@@ -1,0 +1,16 @@
+# Private / local — never commit
+PRIVATE.md
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local data & runtime artifacts
+*.db
+*.sqlite3
+*.log
