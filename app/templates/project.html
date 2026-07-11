@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ project['title'] }} — Bookbarge{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/dashboard">&larr; All projects</a></p>
+  <h2>{{ project['title'] }}</h2>
+  <p class="muted">{{ project['author'] or 'No author set' }} &middot;
+     status: {{ project['status'] }}</p>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <h3>Voice reference</h3>
+  {% if voice %}
+  <p>Uploaded: <strong>{{ voice['filename'] }}</strong>
+     <span class="muted">({{ voice['uploaded_at'] }})</span></p>
+  {% else %}
+  <p class="muted">No voice reference yet &mdash; upload a WAV clip of
+  5&ndash;30 seconds. Uploading a new one replaces the old.</p>
+  {% endif %}
+  <form method="post" action="/projects/{{ project['id'] }}/voice"
+        enctype="multipart/form-data" class="inline-form">
+    <input type="file" name="voice" accept=".wav" required>
+    <button type="submit">{{ 'Replace' if voice else 'Upload' }} voice reference</button>
+  </form>
+
+  <h3>Chapters</h3>
+  {% if chapters %}
+  <table class="listing">
+    <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th></tr>
+    {% for c in chapters %}
+    <tr>
+      <td>{{ c['chapter_number'] }}</td>
+      <td>{{ c['filename'] }}</td>
+      <td>{{ c['raw_text'] | length }} chars</td>
+      <td>{{ c['processing_status'] }}</td>
+      <td>{{ '✓' if c['approved'] else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No chapters yet &mdash; upload your book as one
+  .txt file per chapter (you can select several at once; they're
+  numbered in filename order).</p>
+  {% endif %}
+  <form method="post" action="/projects/{{ project['id'] }}/chapters"
+        enctype="multipart/form-data" class="inline-form">
+    <input type="file" name="chapters" accept=".txt" multiple required>
+    <button type="submit">Upload chapters</button>
+  </form>
+
+  <h3>Danger zone</h3>
+  <form method="post" action="/projects/{{ project['id'] }}/delete"
+        onsubmit="return confirm('Delete this project and all of its files? This cannot be undone.')">
+    <button type="submit" class="danger">Delete project</button>
+  </form>
+</section>
+{% endblock %}

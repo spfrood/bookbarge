@@ -4,7 +4,31 @@
 <section>
   <h2>Your projects</h2>
   <p class="muted">Signed in as {{ user['email'] }}.</p>
-  <p>No projects yet &mdash; project creation arrives in the next phase.</p>
+
+  {% if projects %}
+  <table class="listing">
+    <tr><th>Title</th><th>Author</th><th>Chapters</th><th>Status</th><th>Created</th></tr>
+    {% for p in projects %}
+    <tr>
+      <td><a href="/projects/{{ p['id'] }}">{{ p['title'] }}</a></td>
+      <td>{{ p['author'] or '—' }}</td>
+      <td>{{ p['chapter_count'] }}</td>
+      <td>{{ p['status'] }}</td>
+      <td>{{ p['created_at'] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No projects yet &mdash; create your first one below.</p>
+  {% endif %}
+
+  <h3>New project</h3>
+  <form method="post" action="/projects" class="inline-form">
+    <label>Title <input type="text" name="title" required></label>
+    <label>Author <input type="text" name="author"></label>
+    <button type="submit">Create project</button>
+  </form>
+
   <form method="post" action="/logout">
     <button type="submit" class="secondary">Log out</button>
   </form>

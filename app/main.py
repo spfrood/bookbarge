@@ -3,12 +3,12 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db
+from . import auth, db, projects
 from .config import settings
 
 APP_DIR = Path(__file__).resolve().parent
@@ -27,7 +27,9 @@ app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
 
 auth.templates = templates
+projects.templates = templates
 app.include_router(auth.router)
+app.include_router(projects.router)
 
 
 @app.exception_handler(auth._RedirectToLogin)
@@ -45,8 +47,3 @@ async def index(request: Request):
     if auth.current_user(request) is not None:
         return RedirectResponse("/dashboard", status_code=303)
     return templates.TemplateResponse(request, "index.html")
-
-
-@app.get("/dashboard")
-async def dashboard(request: Request, user=Depends(auth.require_user)):
-    return templates.TemplateResponse(request, "dashboard.html", {"user": user})
