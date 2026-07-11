@@ -1,0 +1,43 @@
+# nginx site template for Bookbarge (public-repo copy; the deployed conf
+# with the real hostname lives outside the repo).
+# Replace __HOSTNAME__, __PORT__, and the ssl_certificate paths, then
+# install to /etc/nginx/sites-available/ and symlink into sites-enabled/.
+# Install the offline page to /var/www/bookbarge-offline/.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __HOSTNAME__;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __HOSTNAME__;
+
+    ssl_certificate     /path/to/origin-cert.pem;
+    ssl_certificate_key /path/to/origin-cert.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Voice reference uploads (WAV, up to ~10 MB) + headroom
+    client_max_body_size 25m;
+
+    # App down → nginx-generated 502/504 becomes the offline page (as 503
+    # so crawlers/monitors see "temporarily unavailable").
+    error_page 502 504 =503 /bookbarge-offline.html;
+
+    location = /bookbarge-offline.html {
+        internal;
+        root /var/www/bookbarge-offline;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:__PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
