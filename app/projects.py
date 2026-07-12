@@ -128,6 +128,27 @@ async def project_page(request: Request, project_id: int,
     return templates.TemplateResponse(request, "project.html", context)
 
 
+@router.post("/projects/{project_id}/edit")
+async def edit_project(request: Request, project_id: int,
+                       user=Depends(auth.require_user),
+                       title: str = Form(...), author: str = Form(""),
+                       narrator: str = Form("")):
+    title = title.strip()
+    if not title:
+        return _project_error(request, user, project_id, "Title is required.")
+    conn = db.connect()
+    try:
+        get_owned_project(conn, user, project_id)
+        conn.execute(
+            """UPDATE projects SET title = ?, author = ?, narrator = ?,
+                   updated_at = datetime('now') WHERE id = ?""",
+            (title, author.strip(), narrator.strip(), project_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
 @router.post("/projects/{project_id}/delete")
 async def delete_project(request: Request, project_id: int,
                          user=Depends(auth.require_user)):

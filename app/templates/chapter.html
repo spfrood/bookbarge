@@ -10,6 +10,16 @@
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
+  <h3>Chapter title</h3>
+  <p class="muted">Shown as the chapter marker in the final audiobook.
+  Renaming never regenerates audio. Leave blank to use the filename.</p>
+  <form method="post" class="inline-form"
+        action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/title">
+    <input type="text" name="title" value="{{ chapter['title'] or '' }}"
+           placeholder="{{ chapter['filename'] }}">
+    <button type="submit">Save title</button>
+  </form>
+
   {% if chapter['processing_status'] in ('generating', 'recasting') %}
   <p class="error">This chapter is regenerating right now — editing is
   locked until it finishes.</p>

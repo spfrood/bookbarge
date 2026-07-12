@@ -153,13 +153,15 @@ async def assemble_audiobook(user_id: int, project_id: int) -> bool:
 
         # Chapter markers: cumulative offsets from real durations.
         meta = [";FFMETADATA1",
-                f"title={_ffmeta_escape(project['title'])}"]
+                f"title={_ffmeta_escape(project['title'])}",
+                f"album={_ffmeta_escape(project['title'])}"]
         if project["author"]:
             meta.append(f"artist={_ffmeta_escape(project['author'])}")
         start = 0
         for c, p in zip(chapters, paths):
             end = start + await _duration_ms(p)
-            title = Path(c["filename"] or "").stem or f"Chapter {c['chapter_number']}"
+            title = (c["title"] or Path(c["filename"] or "").stem
+                     or f"Chapter {c['chapter_number']}")
             meta += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={start}",
                      f"END={end}", f"title={_ffmeta_escape(title)}"]
             start = end
@@ -192,6 +194,11 @@ async def assemble_audiobook(user_id: int, project_id: int) -> bool:
         m4b = MP4(out_path)
         m4b["stik"] = [2]   # media kind: audiobook
         m4b["pgap"] = [True]
+        if project["narrator"]:
+            # Audiobook apps read the narrator from composer (©wrt);
+            # album-artist is a common secondary.
+            m4b["\xa9wrt"] = [project["narrator"]]
+            m4b["aART"] = [project["narrator"]]
         m4b.save()
         ok = True
     except Exception as exc:

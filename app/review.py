@@ -63,6 +63,24 @@ async def toggle_approved(request: Request, project_id: int, chapter_id: int,
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+@router.post("/projects/{project_id}/chapters/{chapter_id}/title")
+async def edit_chapter_title(request: Request, project_id: int, chapter_id: int,
+                             user=Depends(auth.require_user),
+                             title: str = Form("")):
+    """Metadata-only rename — no recast, no approval change. Used for the
+    chapter marker in the final M4B (re-assemble to bake it in)."""
+    conn = db.connect()
+    try:
+        _get_chapter(conn, user, project_id, chapter_id)
+        conn.execute("UPDATE chapters SET title = ? WHERE id = ?",
+                     (title.strip() or None, chapter_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/projects/{project_id}/chapters/{chapter_id}",
+                            status_code=303)
+
+
 # --- chapter detail: inline editor + replace upload ----------------------------
 
 @router.get("/projects/{project_id}/chapters/{chapter_id}")

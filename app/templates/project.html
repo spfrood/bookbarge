@@ -4,10 +4,26 @@
 <section>
   <p><a href="/dashboard">&larr; All projects</a></p>
   <h2>{{ project['title'] }}</h2>
-  <p class="muted">{{ project['author'] or 'No author set' }} &middot;
-     status: {{ project['status'] }}</p>
+  <p class="muted">{{ project['author'] or 'No author set' }}
+     {% if project['narrator'] %}&middot; narrated by {{ project['narrator'] }}{% endif %}
+     &middot; status: {{ project['status'] }}</p>
 
   {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <details class="meta-edit">
+    <summary>Edit audiobook details (title, author, narrator)</summary>
+    <form method="post" action="/projects/{{ project['id'] }}/edit" class="inline-form">
+      <label>Title <input type="text" name="title" required
+             value="{{ project['title'] }}"></label>
+      <label>Author <input type="text" name="author"
+             value="{{ project['author'] or '' }}"></label>
+      <label>Narrator <input type="text" name="narrator"
+             value="{{ project['narrator'] or '' }}"></label>
+      <button type="submit">Save details</button>
+      <p class="muted">These are embedded in the final audiobook's tags.
+      If you've already assembled, re-assemble to bake in changes.</p>
+    </form>
+  </details>
 
   <h3>Voice reference</h3>
   {% if voice %}
@@ -38,7 +54,7 @@
     {% for c in chapters %}
     <tr data-chapter-id="{{ c['id'] }}">
       <td>{{ c['chapter_number'] }}</td>
-      <td><a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}">{{ c['filename'] }}</a>
+      <td><a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}">{{ c['title'] or c['filename'] }}</a>
           <span class="muted">v{{ c['version'] }}</span></td>
       <td>{{ c['raw_text'] | length }} chars</td>
       <td class="js-status">{{ c['processing_status'] }}</td>

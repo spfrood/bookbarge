@@ -93,6 +93,8 @@ button.small { padding: 0.25rem 0.75rem; font-size: 0.9rem; margin-top: 0; }
 td.listen audio { display: block; width: 15rem; height: 2rem; }
 button.small.approved { background: #2e7d32; }
 .checklist { border-left: 3px solid var(--muted); padding-left: 0.75rem; }
+details.meta-edit { margin: 1rem 0; }
+details.meta-edit summary { cursor: pointer; color: var(--accent); }
 .checklist.all-approved { border-color: #2e7d32; }
 textarea {
   width: 100%;
