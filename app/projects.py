@@ -110,8 +110,11 @@ def _project_context(conn, user, project_id: int, error: str = None) -> dict:
         """SELECT 1 FROM generation_jobs WHERE project_id = ?
            AND chapter_id IS NULL AND status = 'running'""",
         (project_id,)).fetchone() is not None
+    audiobook_exists = (storage.output_dir(user["id"], project_id)
+                        / "audiobook.m4b").is_file()
     return {"user": user, "project": project, "chapters": chapters,
-            "voice": voice, "assembling": assembling, "error": error}
+            "voice": voice, "assembling": assembling,
+            "audiobook_exists": audiobook_exists, "error": error}
 
 
 @router.get("/projects/{project_id}")
@@ -224,6 +227,22 @@ async def chapter_audio(request: Request, project_id: int, chapter_id: int,
         filename = f"{chapter['chapter_number']:02d}-{safe}.mp3"
         return FileResponse(path, media_type="audio/mpeg", filename=filename)
     return FileResponse(path, media_type="audio/mpeg")
+
+
+@router.get("/projects/{project_id}/audiobook")
+async def download_audiobook(request: Request, project_id: int,
+                             user=Depends(auth.require_user)):
+    conn = db.connect()
+    try:
+        project = get_owned_project(conn, user, project_id)
+    finally:
+        conn.close()
+    path = storage.output_dir(user["id"], project_id) / "audiobook.m4b"
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_"
+                   for ch in project["title"]).strip() or "audiobook"
+    return FileResponse(path, media_type="audio/mp4", filename=f"{safe}.m4b")
 
 
 # --- voice reference ----------------------------------------------------------

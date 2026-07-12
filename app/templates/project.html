@@ -96,9 +96,9 @@
   <p class="js-assembling">Assembling final audiobook&hellip; this page will
   refresh when it's done.</p>
   {% else %}
-  {% if project['status'] == 'assembled' %}
-  <p>audiobook.m4b is built in this project's output folder &mdash; the
-  download link arrives in the next build phase.</p>
+  {% if audiobook_exists %}
+  <p><a class="button" href="/projects/{{ project['id'] }}/audiobook">Download
+  audiobook (M4B)</a></p>
   {% endif %}
   <form method="post" action="/projects/{{ project['id'] }}/assemble"
         onsubmit="return confirm('Assemble the final audiobook from all approved chapters?')">
@@ -108,6 +108,13 @@
     </button>
   </form>
   {% endif %}
+  {% endif %}
+
+  {% if chapters %}
+  <h3>Clean up</h3>
+  <p class="muted"><a href="/projects/{{ project['id'] }}/cleanup">Free disk
+  space</a> by deleting chapter audio you no longer need &mdash; you choose
+  per chapter, and the final audiobook is never touched.</p>
   {% endif %}
 
   <h3>Danger zone</h3>

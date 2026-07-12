@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Clean up — {{ project['title'] }} — Bookbarge{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/projects/{{ project['id'] }}">&larr; {{ project['title'] }}</a></p>
+  <h2>Clean up project files</h2>
+  <p>Choose what to do with each chapter's audio. <strong>Keep</strong>
+  leaves the chapter MP3 playable and downloadable; <strong>Delete</strong>
+  removes that chapter's MP3 and its intermediate chunk audio to free
+  space. The final audiobook in the output folder is never touched by
+  cleanup — it stays until you delete the whole project.</p>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <form method="post" action="/projects/{{ project['id'] }}/cleanup"
+        onsubmit="return confirm('Apply these cleanup choices? Deleted audio cannot be recovered without regenerating.')">
+    <table class="listing">
+      <tr><th>#</th><th>Chapter</th><th>Chunk audio</th><th>Chapter MP3</th>
+          <th>Keep</th><th>Delete</th></tr>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.chapter['chapter_number'] }}</td>
+        <td>{{ r.chapter['filename'] }}</td>
+        <td>{{ '%.1f MB' | format(r.chunk_mb) if r.chunk_mb else '—' }}</td>
+        <td>{{ '%.1f MB' | format(r.mp3_mb) if r.mp3_mb else '—' }}</td>
+        <td><input type="radio" name="chapter_{{ r.chapter['id'] }}"
+                   value="keep" checked required></td>
+        <td><input type="radio" name="chapter_{{ r.chapter['id'] }}"
+                   value="delete"></td>
+      </tr>
+      {% endfor %}
+    </table>
+    <button type="submit">Apply cleanup</button>
+  </form>
+</section>
+{% endblock %}
