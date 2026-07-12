@@ -29,7 +29,7 @@
   <table class="listing" id="chapters"
          data-project-id="{{ project['id'] }}"
          data-generating="{{ 1 if generating else 0 }}">
-    <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th><th></th></tr>
+    <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th><th>Listen</th><th></th></tr>
     {% for c in chapters %}
     <tr data-chapter-id="{{ c['id'] }}">
       <td>{{ c['chapter_number'] }}</td>
@@ -37,6 +37,16 @@
       <td>{{ c['raw_text'] | length }} chars</td>
       <td class="js-status">{{ c['processing_status'] }}</td>
       <td class="js-approved">{{ '✓' if c['approved'] else '—' }}</td>
+      <td class="listen">
+        {% if c['assembled_audio_path'] %}
+        <audio controls preload="none"
+               src="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio"></audio>
+        <a class="download"
+           href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio?download=1">download</a>
+        {% else %}
+        <span class="muted">—</span>
+        {% endif %}
+      </td>
       <td>
         <form method="post"
               action="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/generate">

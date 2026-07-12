@@ -8,8 +8,10 @@ is indistinguishable from one that doesn't exist (404 either way).
 import sqlite3
 import struct
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 # request.form() yields Starlette's UploadFile, not FastAPI's subclass —
 # isinstance checks must use the Starlette type.
@@ -183,6 +185,37 @@ async def upload_chapters(request: Request, project_id: int,
     finally:
         conn.close()
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+# --- chapter audio: streaming + download (PROJECT_BIBLE.md §9) -----------------
+
+@router.get("/projects/{project_id}/chapters/{chapter_id}/audio")
+async def chapter_audio(request: Request, project_id: int, chapter_id: int,
+                        user=Depends(auth.require_user), download: int = 0):
+    """Serve assembled.mp3. FileResponse handles HTTP Range natively, so
+    the browser player can scrub without fetching the whole file; with
+    ?download=1 the same bytes arrive as an attachment for external players.
+    """
+    conn = db.connect()
+    try:
+        get_owned_project(conn, user, project_id)
+        chapter = conn.execute(
+            "SELECT * FROM chapters WHERE id = ? AND project_id = ?",
+            (chapter_id, project_id)).fetchone()
+    finally:
+        conn.close()
+    if chapter is None or not chapter["assembled_audio_path"]:
+        raise HTTPException(status_code=404)
+    path = Path(chapter["assembled_audio_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+
+    if download:
+        stem = Path(chapter["filename"] or "chapter").stem
+        safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in stem)
+        filename = f"{chapter['chapter_number']:02d}-{safe}.mp3"
+        return FileResponse(path, media_type="audio/mpeg", filename=filename)
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 # --- voice reference ----------------------------------------------------------

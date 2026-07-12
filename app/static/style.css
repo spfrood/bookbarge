@@ -90,6 +90,8 @@ table.listing th, table.listing td {
 .inline-form label { display: block; margin: 0.5rem 0; }
 form button.danger { background: #c0392b; }
 button.small { padding: 0.25rem 0.75rem; font-size: 0.9rem; margin-top: 0; }
+td.listen audio { display: block; width: 15rem; height: 2rem; }
+td.listen a.download { font-size: 0.85rem; }
 button:disabled { background: #b9b2a4; cursor: not-allowed; }
 .error {
   background: #fbe9e7;
