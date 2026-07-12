@@ -1,0 +1,30 @@
+# Bookbarge systemd unit (public-repo template; the deployed unit with
+# real paths lives outside the repo). Replace __USER__ and __REPO_DIR__,
+# install to /etc/systemd/system/bookbarge.service, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bookbarge
+# Runs always-up; nginx serves a static offline page during any downtime
+# (see nginx template). For an up-only-when-in-use posture instead, skip
+# `enable` and start/stop manually.
+
+[Unit]
+Description=Bookbarge audiobook production pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__REPO_DIR__
+ExecStart=__REPO_DIR__/.venv/bin/python -m app
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/srv/bookbarge
+
+[Install]
+WantedBy=multi-user.target
