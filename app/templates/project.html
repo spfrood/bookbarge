@@ -24,8 +24,13 @@
   </form>
 
   <h3>Chapters</h3>
-  {% set generating = chapters | selectattr('processing_status', 'equalto', 'generating') | list %}
+  {% set generating = chapters | selectattr('processing_status', 'in', ('generating', 'recasting')) | list %}
   {% if chapters %}
+  {% set approved_count = chapters | selectattr('approved') | list | length %}
+  <p class="checklist {{ 'all-approved' if approved_count == chapters|length else '' }}">
+    Approval checklist: <strong>{{ approved_count }} of {{ chapters|length }}</strong>
+    chapters approved{{ ' — ready for final assembly' if approved_count == chapters|length else '' }}.
+  </p>
   <table class="listing" id="chapters"
          data-project-id="{{ project['id'] }}"
          data-generating="{{ 1 if generating else 0 }}">
@@ -33,10 +38,20 @@
     {% for c in chapters %}
     <tr data-chapter-id="{{ c['id'] }}">
       <td>{{ c['chapter_number'] }}</td>
-      <td>{{ c['filename'] }}</td>
+      <td><a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}">{{ c['filename'] }}</a>
+          <span class="muted">v{{ c['version'] }}</span></td>
       <td>{{ c['raw_text'] | length }} chars</td>
       <td class="js-status">{{ c['processing_status'] }}</td>
-      <td class="js-approved">{{ '✓' if c['approved'] else '—' }}</td>
+      <td class="js-approved">
+        {% if c['assembled_audio_path'] and c['processing_status'] not in ('generating', 'recasting') %}
+        <form method="post"
+              action="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/approve">
+          <button type="submit" class="small {{ 'approved' if c['approved'] else '' }}">
+            {{ '✓ Approved' if c['approved'] else 'Approve' }}
+          </button>
+        </form>
+        {% else %}—{% endif %}
+      </td>
       <td class="listen">
         {% if c['assembled_audio_path'] %}
         <audio controls preload="none"

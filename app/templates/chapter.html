@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Chapter {{ chapter['chapter_number'] }} — Bookbarge{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/projects/{{ project['id'] }}">&larr; {{ project['title'] }}</a></p>
+  <h2>Chapter {{ chapter['chapter_number'] }} — {{ chapter['filename'] }}</h2>
+  <p class="muted">version {{ chapter['version'] }} &middot;
+     status: {{ chapter['processing_status'] }} &middot;
+     {{ 'approved' if chapter['approved'] else 'not approved' }}</p>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  {% if chapter['processing_status'] in ('generating', 'recasting') %}
+  <p class="error">This chapter is regenerating right now — editing is
+  locked until it finishes.</p>
+  {% else %}
+  <h3>Edit text</h3>
+  <p class="muted">Saving triggers a full recast: the approval toggle
+  resets, the current audio is discarded, and the whole chapter
+  regenerates from the new text (version {{ chapter['version'] + 1 }}).</p>
+  <form method="post"
+        action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/text"
+        onsubmit="return confirm('Save and regenerate this chapter? Current audio and approval will be replaced.')">
+    <textarea name="raw_text" rows="20" {{ '' if has_voice else 'disabled' }}>{{ chapter['raw_text'] }}</textarea>
+    <button type="submit" {{ '' if has_voice else 'disabled' }}>Save &amp; regenerate</button>
+  </form>
+
+  <h3>Or replace with a new .txt file</h3>
+  <form method="post" enctype="multipart/form-data"
+        action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/replace"
+        onsubmit="return confirm('Replace the text and regenerate this chapter? Current audio and approval will be replaced.')">
+    <input type="file" name="replacement" accept=".txt" required
+           {{ '' if has_voice else 'disabled' }}>
+    <button type="submit" {{ '' if has_voice else 'disabled' }}>Upload &amp; regenerate</button>
+  </form>
+  {% if not has_voice %}
+  <p class="error">Upload a voice reference on the project page before recasting.</p>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

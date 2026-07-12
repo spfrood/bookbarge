@@ -91,6 +91,16 @@ table.listing th, table.listing td {
 form button.danger { background: #c0392b; }
 button.small { padding: 0.25rem 0.75rem; font-size: 0.9rem; margin-top: 0; }
 td.listen audio { display: block; width: 15rem; height: 2rem; }
+button.small.approved { background: #2e7d32; }
+.checklist { border-left: 3px solid var(--muted); padding-left: 0.75rem; }
+.checklist.all-approved { border-color: #2e7d32; }
+textarea {
+  width: 100%;
+  font: 0.95rem/1.5 Georgia, serif;
+  padding: 0.5rem;
+  border: 1px solid #c9c2b4;
+  border-radius: 4px;
+}
 td.listen a.download { font-size: 0.85rem; }
 button:disabled { background: #b9b2a4; cursor: not-allowed; }
 .error {

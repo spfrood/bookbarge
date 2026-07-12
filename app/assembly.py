@@ -62,7 +62,7 @@ async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bo
         cur = conn.execute(
             """UPDATE chapters SET assembled_audio_path = ?,
                                    assembled_at = datetime('now')
-               WHERE id = ? AND processing_status = 'generating'""",
+               WHERE id = ? AND processing_status IN ('generating', 'recasting')""",
             (str(out_path), chapter_id))
         conn.commit()
         if cur.rowcount == 0:

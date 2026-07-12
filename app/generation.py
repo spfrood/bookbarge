@@ -63,31 +63,40 @@ async def generate_chapter(request: Request, project_id: int, chapter_id: int,
         if voice is None:
             raise HTTPException(status_code=422,
                                 detail="Upload a voice reference first.")
-        busy = conn.execute(
-            "SELECT id FROM chapters WHERE project_id = ? "
-            "AND processing_status = 'generating'", (project_id,)).fetchone()
-        if busy is not None:
-            raise HTTPException(status_code=409,
-                                detail="Another chapter is already generating — "
-                                       "one at a time.")
-
-        n = persist_chunks(conn, chapter)
-        if n == 0:
-            raise HTTPException(status_code=422, detail="Chapter has no text.")
-        conn.execute(
-            "UPDATE chapters SET processing_status = 'generating' WHERE id = ?",
-            (chapter_id,))
-        conn.execute(
-            """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
-               VALUES (?, ?, ?)""", (project_id, chapter_id, n))
-        conn.execute("UPDATE projects SET status = 'generating', "
-                     "updated_at = datetime('now') WHERE id = ?", (project_id,))
-        conn.commit()
+        launch_generation(conn, user["id"], project_id, chapter,
+                          status="generating")
     finally:
         conn.close()
-
-    _spawn(run_chapter(user["id"], project_id, chapter_id))
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+def launch_generation(conn, user_id: int, project_id: int,
+                      chapter: sqlite3.Row, status: str) -> None:
+    """Shared launch path for Generate and recast. `status` is 'generating'
+    or 'recasting' (§5 enum). Raises HTTPException on guard failure;
+    commits and spawns the worker on success."""
+    busy = conn.execute(
+        "SELECT id FROM chapters WHERE project_id = ? "
+        "AND processing_status IN ('generating', 'recasting')",
+        (project_id,)).fetchone()
+    if busy is not None:
+        raise HTTPException(status_code=409,
+                            detail="Another chapter is already generating — "
+                                   "one at a time.")
+
+    n = persist_chunks(conn, chapter)
+    if n == 0:
+        raise HTTPException(status_code=422, detail="Chapter has no text.")
+    conn.execute(
+        "UPDATE chapters SET processing_status = ? WHERE id = ?",
+        (status, chapter["id"]))
+    conn.execute(
+        """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
+           VALUES (?, ?, ?)""", (project_id, chapter["id"], n))
+    conn.execute("UPDATE projects SET status = 'generating', "
+                 "updated_at = datetime('now') WHERE id = ?", (project_id,))
+    conn.commit()
+    _spawn(run_chapter(user_id, project_id, chapter["id"]))
 
 
 @router.get("/projects/{project_id}/status.json")
@@ -241,7 +250,7 @@ def _finalize_chapter(project_id: int, chapter_id: int, ok: bool) -> None:
         success = ok and remaining == 0
         conn.execute(
             "UPDATE chapters SET processing_status = ? WHERE id = ? "
-            "AND processing_status = 'generating'",
+            "AND processing_status IN ('generating', 'recasting')",
             ("ready_for_review" if success else "error", chapter_id))
         conn.execute(
             """UPDATE generation_jobs SET status = ?, completed_at = datetime('now')
@@ -250,7 +259,8 @@ def _finalize_chapter(project_id: int, chapter_id: int, ok: bool) -> None:
         conn.execute(
             """UPDATE projects SET status = 'reviewing', updated_at = datetime('now')
                WHERE id = ? AND NOT EXISTS (SELECT 1 FROM chapters
-                   WHERE project_id = ? AND processing_status = 'generating')""",
+                   WHERE project_id = ?
+                   AND processing_status IN ('generating', 'recasting'))""",
             (project_id, project_id))
         conn.commit()
     finally:
@@ -266,7 +276,7 @@ def resume_orphaned() -> int:
         rows = conn.execute(
             """SELECT c.id AS chapter_id, c.project_id, p.user_id
                FROM chapters c JOIN projects p ON p.id = c.project_id
-               WHERE c.processing_status = 'generating'""").fetchall()
+               WHERE c.processing_status IN ('generating', 'recasting')""").fetchall()
     finally:
         conn.close()
     for r in rows:

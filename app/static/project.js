@@ -19,11 +19,12 @@
     for (const ch of data.chapters) {
       const row = table.querySelector(`tr[data-chapter-id="${ch.id}"]`);
       if (!row) continue;
-      const label = ch.status === "generating"
-        ? `generating (${ch.chunks_done}/${ch.chunks_total})`
+      const busy = ch.status === "generating" || ch.status === "recasting";
+      const label = busy
+        ? `${ch.status} (${ch.chunks_done}/${ch.chunks_total})`
         : ch.status;
       row.querySelector(".js-status").textContent = label;
-      if (ch.status === "generating") stillGenerating = true;
+      if (busy) stillGenerating = true;
     }
     if (!stillGenerating) {
       clearInterval(timer);
