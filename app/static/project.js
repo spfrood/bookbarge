@@ -26,7 +26,7 @@
       row.querySelector(".js-status").textContent = label;
       if (busy) stillGenerating = true;
     }
-    if (!stillGenerating) {
+    if (!stillGenerating && !data.assembling) {
       clearInterval(timer);
       location.reload();
     }

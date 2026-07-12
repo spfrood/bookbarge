@@ -111,9 +111,13 @@ async def project_status(request: Request, project_id: int,
                       SUM(CASE WHEN k.status = 'done' THEN 1 ELSE 0 END) AS done
                FROM chapters c LEFT JOIN chunks k ON k.chapter_id = c.id
                WHERE c.project_id = ? GROUP BY c.id""", (project_id,)).fetchall()
+        assembling = conn.execute(
+            """SELECT 1 FROM generation_jobs WHERE project_id = ?
+               AND chapter_id IS NULL AND status = 'running'""",
+            (project_id,)).fetchone() is not None
     finally:
         conn.close()
-    return {"chapters": [
+    return {"assembling": assembling, "chapters": [
         {"id": r["id"], "status": r["processing_status"],
          "approved": bool(r["approved"]),
          "chunks_done": r["done"] or 0, "chunks_total": r["total"]}

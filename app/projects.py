@@ -98,23 +98,31 @@ async def create_project(request: Request, user=Depends(auth.require_user),
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
+def _project_context(conn, user, project_id: int, error: str = None) -> dict:
+    project = get_owned_project(conn, user, project_id)
+    chapters = conn.execute(
+        "SELECT * FROM chapters WHERE project_id = ? ORDER BY chapter_number",
+        (project_id,)).fetchall()
+    voice = conn.execute(
+        "SELECT * FROM voice_references WHERE project_id = ?",
+        (project_id,)).fetchone()
+    assembling = conn.execute(
+        """SELECT 1 FROM generation_jobs WHERE project_id = ?
+           AND chapter_id IS NULL AND status = 'running'""",
+        (project_id,)).fetchone() is not None
+    return {"user": user, "project": project, "chapters": chapters,
+            "voice": voice, "assembling": assembling, "error": error}
+
+
 @router.get("/projects/{project_id}")
 async def project_page(request: Request, project_id: int,
                        user=Depends(auth.require_user), error: str = None):
     conn = db.connect()
     try:
-        project = get_owned_project(conn, user, project_id)
-        chapters = conn.execute(
-            "SELECT * FROM chapters WHERE project_id = ? ORDER BY chapter_number",
-            (project_id,)).fetchall()
-        voice = conn.execute(
-            "SELECT * FROM voice_references WHERE project_id = ?",
-            (project_id,)).fetchone()
+        context = _project_context(conn, user, project_id, error)
     finally:
         conn.close()
-    return templates.TemplateResponse(request, "project.html", {
-        "user": user, "project": project, "chapters": chapters,
-        "voice": voice, "error": error})
+    return templates.TemplateResponse(request, "project.html", context)
 
 
 @router.post("/projects/{project_id}/delete")
@@ -270,15 +278,8 @@ def _project_error(request, user, project_id, message):
     """Re-render the project page with a validation error (422)."""
     conn = db.connect()
     try:
-        project = get_owned_project(conn, user, project_id)
-        chapters = conn.execute(
-            "SELECT * FROM chapters WHERE project_id = ? ORDER BY chapter_number",
-            (project_id,)).fetchall()
-        voice = conn.execute(
-            "SELECT * FROM voice_references WHERE project_id = ?",
-            (project_id,)).fetchone()
+        context = _project_context(conn, user, project_id, message)
     finally:
         conn.close()
-    return templates.TemplateResponse(request, "project.html", {
-        "user": user, "project": project, "chapters": chapters,
-        "voice": voice, "error": message}, status_code=422)
+    return templates.TemplateResponse(request, "project.html", context,
+                                      status_code=422)

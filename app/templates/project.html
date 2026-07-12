@@ -33,7 +33,7 @@
   </p>
   <table class="listing" id="chapters"
          data-project-id="{{ project['id'] }}"
-         data-generating="{{ 1 if generating else 0 }}">
+         data-generating="{{ 1 if generating or assembling else 0 }}">
     <tr><th>#</th><th>File</th><th>Length</th><th>Status</th><th>Approved</th><th>Listen</th><th></th></tr>
     {% for c in chapters %}
     <tr data-chapter-id="{{ c['id'] }}">
@@ -88,6 +88,27 @@
     <input type="file" name="chapters" accept=".txt" multiple required>
     <button type="submit">Upload chapters</button>
   </form>
+
+  {% if chapters %}
+  <h3>Final audiobook</h3>
+  {% set all_approved = (chapters | selectattr('approved') | list | length) == chapters | length %}
+  {% if assembling %}
+  <p class="js-assembling">Assembling final audiobook&hellip; this page will
+  refresh when it's done.</p>
+  {% else %}
+  {% if project['status'] == 'assembled' %}
+  <p>audiobook.m4b is built in this project's output folder &mdash; the
+  download link arrives in the next build phase.</p>
+  {% endif %}
+  <form method="post" action="/projects/{{ project['id'] }}/assemble"
+        onsubmit="return confirm('Assemble the final audiobook from all approved chapters?')">
+    <button type="submit" {{ '' if all_approved and not generating else 'disabled' }}
+            title="{{ '' if all_approved else 'Every chapter must be approved first' }}">
+      Assemble Final Audiobook
+    </button>
+  </form>
+  {% endif %}
+  {% endif %}
 
   <h3>Danger zone</h3>
   <form method="post" action="/projects/{{ project['id'] }}/delete"

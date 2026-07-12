@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import auth, db, generation, projects, review
+from . import assembly, auth, db, generation, projects, review
 from .config import settings
 
 APP_DIR = Path(__file__).resolve().parent
@@ -36,6 +36,7 @@ app.include_router(auth.router)
 app.include_router(projects.router)
 app.include_router(generation.router)
 app.include_router(review.router)
+app.include_router(assembly.router)
 
 
 @app.exception_handler(auth._RedirectToLogin)
