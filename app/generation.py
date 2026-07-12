@@ -23,7 +23,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from . import auth, db, runpod_client, storage
+from . import assembly, auth, db, runpod_client, storage
 from .chunking import persist_chunks
 from .config import settings
 from .projects import get_owned_project
@@ -136,6 +136,9 @@ async def run_chapter(user_id: int, project_id: int, chapter_id: int) -> None:
         results = await asyncio.gather(*(bounded(c) for c in chunks),
                                        return_exceptions=True)
         ok = all(r is True for r in results)
+        if ok and _all_chunks_done(chapter_id):
+            # Phase 8: assemble the chapter the moment its last chunk lands.
+            ok = await assembly.assemble_chapter(user_id, project_id, chapter_id)
     except Exception as exc:  # voice file missing, DB trouble, ...
         print(f"generation fatal for chapter {chapter_id}: {exc!r}", flush=True)
         ok = False
@@ -203,6 +206,16 @@ def _update_chunk(chunk: sqlite3.Row, status: str, **fields) -> bool:
                                  chunk["id"], chunk["chapter_version"]))
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _all_chunks_done(chapter_id: int) -> bool:
+    conn = db.connect()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE chapter_id = ? AND status != 'done'",
+            (chapter_id,)).fetchone()[0] == 0
     finally:
         conn.close()
 
