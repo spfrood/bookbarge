@@ -114,7 +114,8 @@ def _project_context(conn, user, project_id: int, error: str = None) -> dict:
                         / "audiobook.m4b").is_file()
     return {"user": user, "project": project, "chapters": chapters,
             "voice": voice, "assembling": assembling,
-            "audiobook_exists": audiobook_exists, "error": error}
+            "audiobook_exists": audiobook_exists,
+            "stock_voices": list_stock_voices(), "error": error}
 
 
 @router.get("/projects/{project_id}")
@@ -224,9 +225,11 @@ async def upload_chapters(request: Request, project_id: int,
 @router.get("/projects/{project_id}/chapters/{chapter_id}/audio")
 async def chapter_audio(request: Request, project_id: int, chapter_id: int,
                         user=Depends(auth.require_user), download: int = 0):
-    """Serve assembled.mp3. FileResponse handles HTTP Range natively, so
-    the browser player can scrub without fetching the whole file; with
-    ?download=1 the same bytes arrive as an attachment for external players.
+    """Serve the chapter's assembled audio (assembled.m4a; assembled.mp3
+    on projects from before the AAC switch). FileResponse handles HTTP
+    Range natively, so the browser player can scrub without fetching the
+    whole file; with ?download=1 the same bytes arrive as an attachment
+    for external players.
     """
     conn = db.connect()
     try:
@@ -242,12 +245,13 @@ async def chapter_audio(request: Request, project_id: int, chapter_id: int,
     if not path.is_file():
         raise HTTPException(status_code=404)
 
+    media_type = "audio/mpeg" if path.suffix == ".mp3" else "audio/mp4"
     if download:
         stem = Path(chapter["filename"] or "chapter").stem
         safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in stem)
-        filename = f"{chapter['chapter_number']:02d}-{safe}.mp3"
-        return FileResponse(path, media_type="audio/mpeg", filename=filename)
-    return FileResponse(path, media_type="audio/mpeg")
+        filename = f"{chapter['chapter_number']:02d}-{safe}{path.suffix}"
+        return FileResponse(path, media_type=media_type, filename=filename)
+    return FileResponse(path, media_type=media_type)
 
 
 @router.get("/projects/{project_id}/audiobook")
@@ -264,6 +268,76 @@ async def download_audiobook(request: Request, project_id: int,
     safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_"
                    for ch in project["title"]).strip() or "audiobook"
     return FileResponse(path, media_type="audio/mp4", filename=f"{safe}.m4b")
+
+
+# --- stock voices (2026-07-12): site-provided selectable voices ----------------
+# Curated WAVs the admin drops into stock_voices/ under the data root
+# (5-30s, same spec as uploads). Scanned per request — no DB rows, no
+# admin UI needed yet. Selecting one copies it into the project as its
+# voice reference; user uploads never join this list.
+
+def list_stock_voices() -> list[dict]:
+    d = storage.stock_voices_dir()
+    if not d.is_dir():
+        return []
+    return [{"name": p.stem, "filename": p.name}
+            for p in sorted(d.glob("*.wav")) if p.is_file()]
+
+
+def _stock_voice_path(filename: str) -> Path:
+    """Resolve a stock voice by exact filename match against the scan —
+    the request value is never used to build a path directly."""
+    for v in list_stock_voices():
+        if v["filename"] == filename:
+            return storage.stock_voices_dir() / v["filename"]
+    raise HTTPException(status_code=404, detail="No such voice.")
+
+
+@router.get("/voices/{filename}/audio")
+async def stock_voice_preview(request: Request, filename: str,
+                              user=Depends(auth.require_user)):
+    """Preview stream so the user can hear a stock voice before choosing."""
+    return FileResponse(_stock_voice_path(filename), media_type="audio/wav")
+
+
+@router.post("/projects/{project_id}/voice/stock")
+async def select_stock_voice(request: Request, project_id: int,
+                             user=Depends(auth.require_user),
+                             voice_name: str = Form(...)):
+    src = _stock_voice_path(voice_name)
+    data = src.read_bytes()
+    # Same spec as uploads — catches an out-of-spec file in the stock
+    # folder at selection time instead of at generation time.
+    duration = wav_duration_seconds(data)
+    if duration is None or not (
+            VOICE_MIN_SECONDS <= duration
+            <= VOICE_MAX_SECONDS + VOICE_DURATION_GRACE):
+        return _project_error(
+            request, user, project_id,
+            f"'{src.stem}' is out of spec on the server "
+            f"({'unreadable' if duration is None else f'{duration:.1f}s'}) — "
+            "tell the admin.")
+
+    conn = db.connect()
+    try:
+        get_owned_project(conn, user, project_id)
+        # Single active clip, same as an upload: replace file and row.
+        path = storage.voice_dir(user["id"], project_id) / "reference.wav"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        conn.execute("DELETE FROM voice_references WHERE project_id = ?",
+                     (project_id,))
+        conn.execute(
+            """INSERT INTO voice_references (project_id, filename, file_path)
+               VALUES (?, ?, ?)""",
+            (project_id, f"{src.stem} (stock voice)", str(path)))
+        conn.execute(
+            "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
+            (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
 # --- voice reference ----------------------------------------------------------

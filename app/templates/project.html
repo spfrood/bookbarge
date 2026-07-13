@@ -27,12 +27,52 @@
 
   <h3>Voice reference</h3>
   {% if voice %}
-  <p>Uploaded: <strong>{{ voice['filename'] }}</strong>
+  <p>Current voice: <strong>{{ voice['filename'] }}</strong>
      <span class="muted">({{ voice['uploaded_at'] }})</span></p>
   {% else %}
-  <p class="muted">No voice reference yet &mdash; upload a WAV clip of
-  5&ndash;30 seconds. Uploading a new one replaces the old.</p>
+  <p class="muted">No voice yet &mdash; pick one of the built-in voices
+  below, or upload your own WAV clip of 5&ndash;30 seconds. Choosing or
+  uploading a new one replaces the old.</p>
   {% endif %}
+
+  {% if stock_voices %}
+  <h4>Choose a built-in voice</h4>
+  <form method="post" action="/projects/{{ project['id'] }}/voice/stock"
+        class="inline-form" id="stock-voice-form">
+    <select name="voice_name" id="stock-voice-select">
+      <option value="" selected disabled>&mdash; pick a voice to preview &mdash;</option>
+      {% for v in stock_voices %}
+      <option value="{{ v.filename }}">{{ v.name }}</option>
+      {% endfor %}
+    </select>
+    <audio controls preload="none" id="stock-voice-preview" hidden></audio>
+    <button type="submit" id="stock-voice-use" disabled>Use this voice</button>
+    <p class="muted" id="stock-voice-hint">Listen to the sample first &mdash;
+    the button unlocks once you've played it.</p>
+  </form>
+  <script>
+    (function () {
+      const sel = document.getElementById("stock-voice-select");
+      const preview = document.getElementById("stock-voice-preview");
+      const use = document.getElementById("stock-voice-use");
+      sel.addEventListener("change", () => {
+        preview.src = "/voices/" + encodeURIComponent(sel.value) + "/audio";
+        preview.hidden = false;
+        use.disabled = true;  // must hear THIS voice before confirming
+      });
+      preview.addEventListener("play", () => { use.disabled = !sel.value; });
+      document.getElementById("stock-voice-form").addEventListener("submit", (e) => {
+        const name = sel.options[sel.selectedIndex].text;
+        if (!confirm("Use '" + name + "' as this project's voice?"
+                     + " It replaces the current voice reference.")) {
+          e.preventDefault();
+        }
+      });
+    })();
+  </script>
+  {% endif %}
+
+  <h4>Or upload your own voice</h4>
   <form method="post" action="/projects/{{ project['id'] }}/voice"
         enctype="multipart/form-data" class="inline-form">
     <input type="file" name="voice" accept=".wav" required>
@@ -47,6 +87,9 @@
     Approval checklist: <strong>{{ approved_count }} of {{ chapters|length }}</strong>
     chapters approved{{ ' — ready for final assembly' if approved_count == chapters|length else '' }}.
   </p>
+  <p class="muted">Click a chapter's name to edit its text, retitle it, or
+  fix individual chunks (regenerating just one line instead of the whole
+  chapter).</p>
   <table class="listing" id="chapters"
          data-project-id="{{ project['id'] }}"
          data-generating="{{ 1 if generating or assembling else 0 }}">
@@ -55,7 +98,12 @@
     <tr data-chapter-id="{{ c['id'] }}">
       <td>{{ c['chapter_number'] }}</td>
       <td><a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}">{{ c['title'] or c['filename'] }}</a>
-          <span class="muted">v{{ c['version'] }}</span></td>
+          <span class="muted">v{{ c['version'] }}</span>
+          <span class="row-actions">
+            <a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}">edit&nbsp;text/title</a>
+            &middot;
+            <a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/chunks">edit&nbsp;chunks</a>
+          </span></td>
       <td>{{ c['raw_text'] | length }} chars</td>
       <td class="js-status">{{ c['processing_status'] }}</td>
       <td class="js-approved">
@@ -74,19 +122,25 @@
                src="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio"></audio>
         <a class="download"
            href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio?download=1">download</a>
+        {% elif c['processing_status'] == 'ready_for_review' %}
+        <a href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/chunks">needs re-stitch</a>
         {% else %}
         <span class="muted">—</span>
         {% endif %}
       </td>
       <td>
+        {% set is_regen = c['processing_status'] in ('ready_for_review', 'error') %}
         <form method="post"
-              action="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/generate">
+              action="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/generate"
+              {% if is_regen %}
+              onsubmit="return confirm('Regenerate the ENTIRE chapter from its text? Every chunk is re-sent for generation (full cost). To fix one line cheaply, use edit chunks instead.')"
+              {% endif %}>
           <button type="submit" class="small"
                   {{ 'disabled' if not voice or generating else '' }}
                   title="{{ 'Upload a voice reference first' if not voice
-                            else ('Another chapter is generating' if generating else '') }}">
-            {{ 'Regenerate' if c['processing_status'] in ('ready_for_review', 'error')
-               else 'Generate' }}
+                            else ('Another chapter is generating' if generating
+                            else ('Regenerates every chunk — full cost' if is_regen else '')) }}">
+            {{ 'Regenerate all' if is_regen else 'Generate' }}
           </button>
         </form>
       </td>

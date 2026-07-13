@@ -10,6 +10,8 @@ Multi-user from day one: any visitor can self-register an account, secured with 
 
 This is a proof-of-concept. Monetization (flat fee per project, bring-your-own-RunPod-token, or another model) is not decided yet — the architecture should not block adding billing later, but billing itself is out of scope for this build.
 
+**Long-term direction** *(recorded 2026-07-12, after the narration pipeline went live)*: single-narrator audiobooks are the foundation, not the destination. The goal is **audiodrama production** — multiple cloned voices for characters, directed/dramatized delivery, and sound design (effects, ambience, music). See Section 15 for the roadmap.
+
 ---
 
 ## 2. Core Workflow
@@ -17,17 +19,17 @@ This is a proof-of-concept. Monetization (flat fee per project, bring-your-own-R
 1. User registers an account and lands on a pending-approval screen; admin approves in the DB or a minimal approval view; user logs in (password + TOTP) only after approval
 2. User creates a new project (book title, author, etc.)
 3. User uploads chapters as plain `.txt` files (one file per chapter)
-4. User uploads a voice reference clip (WAV, 5–30 seconds)
+4. User picks a voice: either selects one of the site's **built-in stock voices** (curated samples the admin drops into `stock_voices/` under the data root; the UI requires playing the sample before the selection can be confirmed, and selecting copies it in as the project's voice reference) or uploads their own reference clip (WAV, 5–30 seconds). Uploaded voices do **not** join the selectable stock list. *(Stock voices added 2026-07-12 — the first slice of §15 Stage 1.)*
 5. User clicks **Generate** — backend splits each chapter into sentence-aware chunks (~300–500 characters, sized so each chunk's audio stays under Chatterbox's ~40-second generation ceiling — see Section 8) and dispatches each chunk to a RunPod Serverless Chatterbox Turbo endpoint
 6. Backend polls RunPod for completion, stores returned audio per chunk, and updates status in real time
-7. As soon as all chunks belonging to a chapter are complete, the backend automatically assembles them (via FFmpeg) into a single per-chapter audio file in a widely-compatible format (MP3), independent of the other chapters
-8. The chapter becomes available for review: the user can **stream it in-browser** or **download the MP3** to review at their own pace in any media player — full-length listening isn't realistic to force entirely within a browser session, so both paths are first-class
+7. As soon as all chunks belonging to a chapter are complete, the backend automatically assembles them (via FFmpeg) into a single per-chapter audio file, independent of the other chapters. *(Revised 2026-07-12: the format is AAC in `.m4a` — the final M4B's exact codec — rather than the originally planned MP3, so final assembly is a lossless copy-concat remux taking seconds instead of re-encoding the whole book, which took ~40 minutes for a 7.4-hour book and added a second lossy generation. Chapters assembled before this change remain MP3; final assembly falls back to re-encoding for them.)*
+8. The chapter becomes available for review: the user can **stream it in-browser** or **download the chapter audio** to review at their own pace in any media player — full-length listening isn't realistic to force entirely within a browser session, so both paths are first-class
 9. After listening, the user sets the chapter's **Approved** toggle on or off — it can be flipped again at any time later, even after being approved, right up until the project is deleted:
    - **Approved (on)** — the chapter counts toward the project being ready for final assembly
    - **Not approved** — if the user edits the chapter text inline or uploads a replacement `.txt` file, the backend re-chunks *that chapter only*, regenerates its chunks via RunPod, and re-assembles its chapter audio (this also clears the Approved toggle automatically); the chapter returns to pending review and the cycle (steps 7–9) repeats for that chapter alone. The user can also simply toggle approval off without editing anything, if they change their mind on re-listening.
 10. Once **every** chapter in the project is marked Approved, the **Assemble Final Audiobook** action becomes available
 11. User clicks **Assemble** — FFmpeg concatenates the approved per-chapter audio files into a single M4B with embedded chapter markers
-12. User downloads the finished audiobook and/or the individual approved chapter MP3s
+12. User downloads the finished audiobook and/or the individual approved chapter audio files
 13. User clicks **Clean Up** — deletes intermediate chunk files and RunPod job records, leaving only final chapter and audiobook output files until the user manually deletes the project
 
 ---
@@ -40,7 +42,7 @@ This is a proof-of-concept. Monetization (flat fee per project, bring-your-own-R
 | Frontend | Jinja2 templates + vanilla JS | No build tooling, simple enough not to need a SPA framework |
 | Database | SQLite | Zero-ops, sufficient for expected load; migrate to Postgres later only if concurrency demands it |
 | Auth | `passlib`/`bcrypt` for passwords, `pyotp` for TOTP, server-side sessions (signed cookies via `itsdangerous` or `starlette` session middleware) | Standard, well-documented, no external auth provider dependency |
-| Audio assembly | FFmpeg (VPS-side, CPU only) | Two-stage: per-chapter MP3 assembly as chunks complete, plus final M4B assembly with chapter markers once all chapters are approved |
+| Audio assembly | FFmpeg (VPS-side, CPU only) | Two-stage: per-chapter AAC (`.m4a`) assembly as chunks complete, plus final M4B copy-concat remux with chapter markers once all chapters are approved (see §2 step 7 revision note) |
 | GPU inference | RunPod Serverless | Pay-per-second, scales to zero when idle, fits "bring online only when needed" cost model |
 | TTS model | Chatterbox **Turbo** (ResembleAI, MIT license incl. weights, 350M, English-only) | Best open-source quality/cost tradeoff; commercial use permitted under MIT; voice cloning from short reference clip. Must be the **Turbo** variant specifically — it is the only Chatterbox model that renders paralinguistic tags (Section 7); the standard and multilingual variants speak tags aloud as literal text |
 | Reverse proxy / TLS | Nginx + existing domain (already pointed at VPS) | HTTPS termination, required for secure session cookies |
@@ -102,17 +104,18 @@ Every table with a `project_id` or reachable through one must be scoped to `user
 ```
 /srv/bookbarge/
   data/app.db                        ← SQLite database
+  stock_voices/                      ← site-provided selectable voices (admin-curated WAVs, 5–30s; display name = filename stem; scanned per request, no DB rows)
   users/{user_id}/
     projects/{project_id}/
       voice/                         ← uploaded reference clip(s)
       chapters/{chapter_id}/
         source.txt                   ← current chapter text (overwritten on edit/re-upload, version tracked in DB)
         chunks/                      ← per-chunk audio returned from RunPod for the current version
-        assembled.mp3                ← per-chapter assembled audio (streamed and/or downloaded for review)
-      output/                        ← final M4B + copies of approved chapter MP3s (survives cleanup)
+        assembled.m4a                ← per-chapter assembled audio (AAC; streamed and/or downloaded for review)
+      output/                        ← final M4B (survives cleanup)
 ```
 
-Cleanup is user-driven, not fixed: at cleanup time the user chooses, per chapter, whether to keep or delete that chapter's `assembled.mp3` and any remaining chunk audio. Intermediate chunk files no longer needed for playback are the main cleanup candidates; `output/` (the final M4B) and any chapter files the user chose to keep persist until manually deleted. There are no storage quotas yet — this is planned for later, at which point cleanup choices may need to be constrained by remaining quota.
+Cleanup is user-driven, not fixed: at cleanup time the user chooses, per chapter, whether to keep or delete that chapter's assembled audio and any remaining chunk audio. Intermediate chunk files no longer needed for playback are the main cleanup candidates; `output/` (the final M4B) and any chapter files the user chose to keep persist until manually deleted. There are no storage quotas yet — this is planned for later, at which point cleanup choices may need to be constrained by remaining quota.
 
 ---
 
@@ -156,10 +159,12 @@ GPU sizing reference: an RTX 3090 (24GB) comfortably runs Chatterbox Turbo (350M
 Reviewing full audiobook chapters by ear takes real time regardless of how fast generation is — this needs to be treated as a workflow spanning multiple sessions, not a synchronous in-browser step.
 
 - **Streaming**: chapter audio should be served with HTTP Range support so the browser's `<audio>` element can seek/scrub without downloading the whole file first. Starlette's `FileResponse` supports Range requests natively; if performance under load ever becomes a concern, this can be moved to an Nginx-served static location with authenticated, short-lived signed URLs.
-- **Download**: the same `assembled.mp3` file is offered as a direct download link so the user can review it in any external media player (car stereo, phone, etc.) on their own schedule.
+- **Download**: the same assembled chapter file is offered as a direct download link so the user can review it in any external media player (car stereo, phone, etc.) on their own schedule.
 - **Review decision**: each chapter has an **Approved** toggle (on/off) rather than two terminal, one-way states. The user can flip it freely — approve, unapprove, re-approve — any time up until the project is deleted, whether or not they've made any text changes. There's no partial/per-chunk approval at this stage; the whole chapter is judged as a unit.
 - **Recast input**: the user can either edit the chapter text directly in a textarea in the UI, or upload a replacement `.txt` file. Both paths converge on the same recast pipeline (Section 5's versioning behavior) and automatically clear the Approved toggle, since the underlying audio is being replaced.
 - **Recast scope**: recasting regenerates only the affected chapter — other chapters' chunks, audio, and approval status are untouched.
+- **Chunk-level recast** *(added 2026-07-12 after alpha use showed full-chapter recasts were tediously coarse for small corrections)*: a per-chapter "Edit chunks" view lists every generated chunk with its own audio player and editable text. Saving a chunk regenerates **only that chunk** (keeping the chapter version and all other chunks' audio) and clears the chapter's approval — same semantics as a full recast, minus the cost. Edits are validated against the measured chunk cap (Section 8) with a live character counter; over-cap text must be trimmed rather than silently re-split. Saving a chunk unchanged deliberately re-rolls its delivery (generation is stochastic). `raw_text`/`source.txt` are updated in place so a later full recast never resurrects pre-edit wording. Chunk editing is unavailable once cleanup has removed a chapter's chunk data.
+- **Deferred re-stitch** *(revised 2026-07-13 — originally each chunk edit auto-re-assembled the chapter, but the full AAC re-encode dwarfs a single chunk's generation time)*: chunk edits do **not** rebuild the chapter audio. The user edits any number of chunks, then triggers one explicit **"Re-stitch chapter audio"** (chunks page; no GPU cost) that rebuilds `assembled.m4a`. Until then the chapter shows "needs re-stitch" in place of its player, and approval is blocked (nothing listenable to approve). Full generation and full recast still auto-assemble as before.
 - **Final assembly gate**: the "Assemble Final Audiobook" action stays disabled until every chapter in the project is currently marked Approved. The UI should show a clear per-chapter checklist so the user can see at a glance what's still outstanding. Because approval can be toggled at any time, this is evaluated fresh at the moment the user clicks Assemble, not cached from an earlier check.
 
 ---
@@ -198,6 +203,7 @@ This doesn't need to be elaborate — a static banner or callout block on the lo
 - Admin dashboard / user management UI (schema includes `is_admin` for future use, but no UI yet)
 - Distribution to ACX/Audible (policy currently disfavors external AI narration — Findaway Voices and direct sales are the viable channels; not part of this build regardless)
 - Automated paralinguistic tag insertion / LLM-based text enrichment — deferred to avoid recurring external API costs; see Section 7
+- Audiodrama features (multi-voice, sound design, dramatization) — this is the long-term direction, not the current build; roadmap in Section 15
 
 ---
 
@@ -210,7 +216,7 @@ This doesn't need to be elaborate — a static banner or callout block on the lo
 5. **Project & chapter management** — CRUD for projects, chapter upload, voice reference upload, per-user file isolation
 6. **Chunking logic** — sentence-aware text splitting using `nltk`'s sentence tokenizer (handles abbreviations/edge cases better than a raw regex, lighter than spaCy), targeting ~300–500 characters per chunk with a hard cap set from the ceiling measured in step 1 (each chunk's audio must stay under Chatterbox's ~40-second generation limit); chunk records in DB, tied to chapter version; bracketed paralinguistic tags (Section 7) must pass through unmodified and never be split mid-tag
 7. **Generation pipeline** — dispatch chunks to RunPod, background polling, status updates, audio storage
-8. **Per-chapter assembly** — FFmpeg concatenation into `assembled.mp3` as soon as all of a chapter's chunks complete
+8. **Per-chapter assembly** — FFmpeg concatenation into `assembled.m4a` as soon as all of a chapter's chunks complete
 9. **Streaming & download** — Range-enabled chapter audio serving, download links
 10. **Review & recast UI** — chapter-level Approved toggle (freely flippable, per Section 9), recast via inline text edit or file re-upload, per-chapter approval checklist
 11. **Final assembly pipeline** — gated on all chapters approved; FFmpeg concatenation of approved chapters into final M4B with chapter markers
@@ -224,3 +230,42 @@ This doesn't need to be elaborate — a static banner or callout block on the lo
 - **Recast text history**: defaulting to simple overwrite with no version history retained on chapter edits, per Section 6. Flag if this should instead retain prior versions.
 - Whether disk quotas (once added later) should constrain what a user is allowed to keep at cleanup time, or simply block new uploads once exceeded
 - **Paragraph-boundary pacing in chunking** (noted 2026-07-11, needs real-listening data): the chunker splits at sentence boundaries and ignores paragraph breaks, so a chunk can pack narration and dialogue from adjacent paragraphs together. TTS pauses derive from punctuation, so this may well be inaudible — but if full-chapter audio feels rushed at paragraph turns, add a prefer-paragraph-break rule to the chunker (break at paragraph boundaries when a chunk is already past the ~250-char target, even if more would fit). Assess after a few real chapters have been generated and listened to, not before.
+
+---
+
+## 15. Roadmap: Toward Audiodrama Production (added 2026-07-12)
+
+The north star: evolve Bookbarge from single-narrator audiobook narration into **audiodrama production** — the same manuscript-to-M4B pipeline, but with character voices, directed performances, and a sound-design layer. Staged so each stage ships value on its own; nothing here is committed to a timeline.
+
+### Stage 1 — Multi-voice (character voices)
+
+The highest-value step: dialogue rendered in per-character cloned voices while the narrator keeps the prose.
+
+- **Voice library per project**: named voice references ("Narrator", "Mrs. Abernathy", …) instead of today's single active clip. The `voice_references` table already holds multiple rows per project — the single-active rule is app-level only — so this is mostly a `name` column, upload UI, and lifting the replace-on-upload behavior. *(First slice shipped 2026-07-12: a site-wide **stock voice library** — admin-curated samples in `stock_voices/`, previewed-then-selected as a project's voice; see §2 step 4. Per-project multi-voice is the remaining work.)*
+- **Speaker markup in the chapter text**: the user annotates who speaks (exact syntax TBD — something screenplay-adjacent that survives plain `.txt`). Consistent with §7's stance, Bookbarge does **not** auto-attribute dialogue via an LLM; the user marks up their manuscript themselves, by hand or with their own tools.
+- **Speaker-aware chunking**: one RunPod call carries one voice, so a chunk can only ever have one speaker — speaker changes force chunk boundaries (expect more, shorter chunks in dialogue-heavy scenes, and correspondingly more per-call overhead). `chunks` gains a voice reference FK; the measured 350-char cap applies per chunk regardless of voice.
+- **Per-chunk voice dispatch**: the pipeline already dispatches and stores audio per chunk; the voice payload moves from per-chapter to per-chunk. The chunk editor (§9) gains a voice selector, making miscast lines fixable chunk-by-chunk like any other correction.
+
+### Stage 2 — Dramatization (directed delivery)
+
+Making performances, not just readings.
+
+- **Per-chunk delivery direction**: paralinguistic tags (§7) already render in Turbo; expose the handler's generation parameters (pace/intensity/expressiveness — whatever Turbo actually honors, to be measured like the Phase 1 ceiling) as per-chunk overrides for lines that need a whisper, a shout, a dry aside.
+- **Per-voice defaults**: a character's baseline delivery set once on the voice, overridden per chunk when a scene demands it.
+- The chunk-level re-roll workflow (built 2026-07-12) is already the retake mechanism: direct, regenerate, listen, repeat — per line, at per-line cost.
+
+### Stage 3 — Sound design (effects, ambience, music)
+
+Fundamentally different from Stages 1–2: these are **real audio assets mixed into the timeline**, not something the TTS model renders.
+
+- **Sound library**: uploaded clips (per project, possibly shared across projects), managed like voice references.
+- **Cue markup** distinct from §7's paralinguistic tags: e.g. `[sfx: door-creak]` or `[amb: rain]…[amb: end]` anchored in the text. Unlike TTS tags, cues are **stripped before dispatch** (the model must never read them aloud) and resolved into time offsets afterward from the surrounding chunks' actual audio durations.
+- **Assembly becomes a mix**: today's concat gains an FFmpeg mixing stage — speech track plus cue events at computed offsets, ambience beds ducked under dialogue, likely a move to stereo output. One-shot effects first; looping beds, music, and ducking automation later.
+- The final deliverable stays an M4B with chapter markers; review/approval flow is unchanged (the mixed chapter is what gets streamed for review).
+
+### Invariants across all stages
+
+- The measured chunk cap (§8) governs everything — more voices never means longer chunks.
+- No automated LLM enrichment (§7): all markup — speakers, direction, cues — is user-supplied.
+- Chapter- and chunk-level review/recast remain the quality loop; new capabilities plug into it rather than bypassing it.
+- Costs stay pay-per-use: more voices and retakes cost more GPU seconds, never a standing bill.

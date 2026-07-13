@@ -7,8 +7,9 @@
     chapters/{chapter_id}/
       source.txt                ← current chapter text
       chunks/                   ← per-chunk audio for the current version
-      assembled.mp3             ← per-chapter assembled audio
-    output/                     ← final M4B + kept chapter MP3s
+      assembled.m4a             ← per-chapter assembled audio (AAC;
+                                  assembled.mp3 on pre-AAC-switch projects)
+    output/                     ← final M4B
 
 Every path builder takes user_id first: user isolation is structural —
 there is no way to build a path that isn't inside the owner's tree, and
@@ -23,6 +24,12 @@ from .config import settings
 
 def project_dir(user_id: int, project_id: int) -> Path:
     return settings.data_root / "users" / str(user_id) / "projects" / str(project_id)
+
+
+def stock_voices_dir() -> Path:
+    """Site-provided selectable voices (admin drops curated WAVs here;
+    no per-user data). Display name = filename stem."""
+    return settings.data_root / "stock_voices"
 
 
 def voice_dir(user_id: int, project_id: int) -> Path:

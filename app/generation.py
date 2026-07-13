@@ -70,11 +70,7 @@ async def generate_chapter(request: Request, project_id: int, chapter_id: int,
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-def launch_generation(conn, user_id: int, project_id: int,
-                      chapter: sqlite3.Row, status: str) -> None:
-    """Shared launch path for Generate and recast. `status` is 'generating'
-    or 'recasting' (§5 enum). Raises HTTPException on guard failure;
-    commits and spawns the worker on success."""
+def _require_idle(conn, project_id: int) -> None:
     busy = conn.execute(
         "SELECT id FROM chapters WHERE project_id = ? "
         "AND processing_status IN ('generating', 'recasting')",
@@ -83,6 +79,14 @@ def launch_generation(conn, user_id: int, project_id: int,
         raise HTTPException(status_code=409,
                             detail="Another chapter is already generating — "
                                    "one at a time.")
+
+
+def launch_generation(conn, user_id: int, project_id: int,
+                      chapter: sqlite3.Row, status: str) -> None:
+    """Shared launch path for Generate and recast. `status` is 'generating'
+    or 'recasting' (§5 enum). Raises HTTPException on guard failure;
+    commits and spawns the worker on success."""
+    _require_idle(conn, project_id)
 
     n = persist_chunks(conn, chapter)
     if n == 0:
@@ -97,6 +101,75 @@ def launch_generation(conn, user_id: int, project_id: int,
                  "updated_at = datetime('now') WHERE id = ?", (project_id,))
     conn.commit()
     _spawn(run_chapter(user_id, project_id, chapter["id"]))
+
+
+def launch_chunk_regen(conn, user_id: int, project_id: int,
+                       chapter: sqlite3.Row, chunk: sqlite3.Row,
+                       new_text: str) -> None:
+    """Chunk-level recast: regenerate one edited chunk, keep the rest.
+
+    Unlike launch_generation this does NOT re-chunk or bump the chapter
+    version — every other chunk's row and audio stay valid. Only the
+    edited chunk drops back to pending; the standard worker regenerates
+    whatever isn't done (repairing any errored chunks along the way) and
+    re-assembles the chapter. Caller has already validated the text
+    against CHUNK_HARD_CAP and synced raw_text/source.txt."""
+    _require_idle(conn, project_id)
+    conn.execute(
+        """UPDATE chunks SET text = ?, status = 'pending',
+               runpod_job_id = NULL, audio_file_path = NULL,
+               updated_at = datetime('now') WHERE id = ?""",
+        (new_text, chunk["id"]))
+    # Same semantics as a full recast: the audio backing any approval is
+    # being replaced, and the assembled file is stale until re-assembly.
+    conn.execute(
+        """UPDATE chapters SET processing_status = 'recasting',
+               approved = 0, approved_at = NULL,
+               assembled_audio_path = NULL, assembled_at = NULL
+           WHERE id = ?""", (chapter["id"],))
+    conn.execute(
+        """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
+           VALUES (?, ?, 1)""", (project_id, chapter["id"]))
+    conn.execute("UPDATE projects SET status = 'generating', "
+                 "updated_at = datetime('now') WHERE id = ?", (project_id,))
+    conn.commit()
+    # No re-stitch here: the user re-stitches once after their last edit.
+    _spawn(run_chapter(user_id, project_id, chapter["id"], assemble=False))
+
+
+@router.post("/projects/{project_id}/chapters/{chapter_id}/stitch")
+async def stitch_chapter(request: Request, project_id: int, chapter_id: int,
+                         user=Depends(auth.require_user)):
+    """Explicit chapter re-stitch after chunk edits (2026-07-13). Runs the
+    standard worker: any non-done chunks are (re)generated first, then the
+    chapter assembles. No-GPU-cost when everything is already done."""
+    conn = db.connect()
+    try:
+        get_owned_project(conn, user, project_id)
+        chapter = conn.execute(
+            "SELECT * FROM chapters WHERE id = ? AND project_id = ?",
+            (chapter_id, project_id)).fetchone()
+        if chapter is None:
+            raise HTTPException(status_code=404)
+        _require_idle(conn, project_id)
+        n = conn.execute("SELECT COUNT(*) FROM chunks WHERE chapter_id = ?",
+                         (chapter_id,)).fetchone()[0]
+        if n == 0:
+            raise HTTPException(status_code=422,
+                                detail="No chunks to stitch — generate first.")
+        conn.execute("UPDATE chapters SET processing_status = 'recasting' "
+                     "WHERE id = ?", (chapter_id,))
+        conn.execute(
+            """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
+               VALUES (?, ?, ?)""", (project_id, chapter_id, n))
+        conn.execute("UPDATE projects SET status = 'generating', "
+                     "updated_at = datetime('now') WHERE id = ?", (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    _spawn(run_chapter(user["id"], project_id, chapter_id))
+    return RedirectResponse(
+        f"/projects/{project_id}/chapters/{chapter_id}/chunks", status_code=303)
 
 
 @router.get("/projects/{project_id}/status.json")
@@ -126,8 +199,16 @@ async def project_status(request: Request, project_id: int,
 
 # --- worker -------------------------------------------------------------------
 
-async def run_chapter(user_id: int, project_id: int, chapter_id: int) -> None:
-    """Generate every unfinished chunk of one chapter, then finalize."""
+async def run_chapter(user_id: int, project_id: int, chapter_id: int,
+                      assemble: bool = True) -> None:
+    """Generate every unfinished chunk of one chapter, then finalize.
+
+    assemble=False (chunk-level edits, 2026-07-13): skip the chapter
+    re-stitch — a full AAC re-encode that dwarfs a single chunk's
+    generation time — so consecutive edits stay fast. The user triggers
+    one explicit re-stitch when done (the /stitch route), which runs this
+    same worker with no pending chunks and assemble=True.
+    """
     try:
         voice_path = storage.voice_dir(user_id, project_id) / "reference.wav"
         voice_b64 = base64.b64encode(voice_path.read_bytes()).decode()
@@ -149,7 +230,7 @@ async def run_chapter(user_id: int, project_id: int, chapter_id: int) -> None:
         results = await asyncio.gather(*(bounded(c) for c in chunks),
                                        return_exceptions=True)
         ok = all(r is True for r in results)
-        if ok and _all_chunks_done(chapter_id):
+        if ok and assemble and _all_chunks_done(chapter_id):
             # Phase 8: assemble the chapter the moment its last chunk lands.
             ok = await assembly.assemble_chapter(user_id, project_id, chapter_id)
     except Exception as exc:  # voice file missing, DB trouble, ...

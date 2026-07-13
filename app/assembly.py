@@ -1,10 +1,11 @@
 """Per-chapter audio assembly (PROJECT_BIBLE.md §2 step 7, §9).
 
 The moment a chapter's last chunk reaches 'done', its chunk WAVs are
-concatenated with FFmpeg into assembled.mp3 in the chapter directory.
+concatenated with FFmpeg into assembled.m4a in the chapter directory.
 Plain concat, no crossfade — verified seamless by ear in Phase 1
-(runpod/RESULTS.md). MP3 at VBR q2 (~190 kbps): universally playable,
-generous for 24 kHz mono narration.
+(runpod/RESULTS.md). AAC 96k (the final M4B's exact format) so the final
+assembly is a copy-concat remux, not a second lossy re-encode of the
+whole book — that re-encode cost ~40 minutes for a 7.4-hour book.
 """
 
 import asyncio
@@ -22,7 +23,7 @@ router = APIRouter()
 
 
 async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bool:
-    """Concatenate a chapter's done chunks into assembled.mp3.
+    """Concatenate a chapter's done chunks into assembled.m4a.
 
     Returns True on success (DB fields updated), False otherwise.
     Chunk order comes from chunk_index in the DB, not directory listing.
@@ -43,15 +44,17 @@ async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bo
               flush=True)
         return False
 
-    out_path = storage.chapter_dir(user_id, project_id, chapter_id) / "assembled.mp3"
+    out_path = storage.chapter_dir(user_id, project_id, chapter_id) / "assembled.m4a"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("".join(f"file '{p}'\n" for p in paths))
         list_path = f.name
     try:
+        # faststart so the browser player can scrub via Range requests.
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "concat", "-safe", "0", "-i", list_path,
-            "-codec:a", "libmp3lame", "-qscale:a", "2", str(out_path),
+            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+            str(out_path),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
@@ -166,6 +169,15 @@ async def assemble_audiobook(user_id: int, project_id: int) -> bool:
                      f"END={end}", f"title={_ffmeta_escape(title)}"]
             start = end
 
+        # Chapters are already AAC (assembled.m4a), so the book is a
+        # copy-concat remux — seconds, no quality loss. Projects assembled
+        # before the m4a switch still have MP3 chapters; those get the old
+        # re-encode path.
+        if all(p.suffix == ".m4a" for p in paths):
+            codec_args = ["-c:a", "copy"]
+        else:
+            codec_args = ["-c:a", "aac", "-b:a", "96k"]
+
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
             f.write("".join(f"file '{p}'\n" for p in paths))
             list_path = f.name
@@ -178,7 +190,7 @@ async def assemble_audiobook(user_id: int, project_id: int) -> bool:
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 "-f", "concat", "-safe", "0", "-i", list_path,
                 "-i", meta_path, "-map_metadata", "1", "-map", "0:a",
-                "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+                *codec_args, "-movflags", "+faststart",
                 "-f", "mp4", str(out_path),
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
             _, stderr = await proc.communicate()

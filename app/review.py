@@ -11,14 +11,17 @@ re-approve — whether or not the text changed. The only time it's refused
 is while the chapter's audio is actively being regenerated.
 """
 
+import re
 import sqlite3
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
 from . import auth, db, generation, storage
+from .chunking import CHUNK_HARD_CAP
 from .projects import MAX_CHAPTER_BYTES, get_owned_project
 
 router = APIRouter()
@@ -51,7 +54,8 @@ async def toggle_approved(request: Request, project_id: int, chapter_id: int,
                                 detail="Chapter audio is being regenerated.")
         if not chapter["assembled_audio_path"]:
             raise HTTPException(status_code=422,
-                                detail="Nothing to approve yet — generate first.")
+                                detail="No chapter audio to approve — "
+                                       "generate (or re-stitch) first.")
         now_approved = 0 if chapter["approved"] else 1
         conn.execute(
             """UPDATE chapters SET approved = ?,
@@ -168,7 +172,8 @@ def _recast(request: Request, user: sqlite3.Row, project_id: int,
         chapter_dir = storage.chapter_dir(user["id"], project_id, chapter_id)
         chapter_dir.mkdir(parents=True, exist_ok=True)
         (chapter_dir / "source.txt").write_text(text, encoding="utf-8")
-        (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
+        (chapter_dir / "assembled.m4a").unlink(missing_ok=True)
+        (chapter_dir / "assembled.mp3").unlink(missing_ok=True)  # pre-AAC-switch
         for wav in storage.chunks_dir(user["id"], project_id, chapter_id).glob("*.wav"):
             wav.unlink()
 
@@ -179,3 +184,185 @@ def _recast(request: Request, user: sqlite3.Row, project_id: int,
     finally:
         conn.close()
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
+# --- chunk-level editing (2026-07-12) -------------------------------------------
+# Fix one flubbed line without re-paying to regenerate the whole chapter:
+# only the edited chunk goes back to RunPod, then the chapter re-assembles.
+# Saving an unchanged chunk is allowed on purpose — generation is
+# stochastic, so it works as a "re-roll this take" button.
+
+def _chunk_rows(conn: sqlite3.Connection, chapter_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM chunks WHERE chapter_id = ? ORDER BY chunk_index",
+        (chapter_id,)).fetchall()
+
+
+def _render_chunks(request, conn, user, project_id, chapter, error=None):
+    project = conn.execute("SELECT * FROM projects WHERE id = ?",
+                           (project_id,)).fetchone()
+    voice = conn.execute(
+        "SELECT id FROM voice_references WHERE project_id = ?",
+        (project_id,)).fetchone()
+    return templates.TemplateResponse(request, "chunks.html", {
+        "user": user, "project": project, "chapter": chapter,
+        "chunks": _chunk_rows(conn, chapter["id"]), "cap": CHUNK_HARD_CAP,
+        "has_voice": voice is not None, "error": error})
+
+
+@router.get("/projects/{project_id}/chapters/{chapter_id}/chunks")
+async def chunks_page(request: Request, project_id: int, chapter_id: int,
+                      user=Depends(auth.require_user)):
+    conn = db.connect()
+    try:
+        chapter = _get_chapter(conn, user, project_id, chapter_id)
+        return _render_chunks(request, conn, user, project_id, chapter)
+    finally:
+        conn.close()
+
+
+@router.get("/projects/{project_id}/chapters/{chapter_id}/chunks/{chunk_id}/audio")
+async def chunk_audio(request: Request, project_id: int, chapter_id: int,
+                      chunk_id: int, user=Depends(auth.require_user)):
+    conn = db.connect()
+    try:
+        _get_chapter(conn, user, project_id, chapter_id)
+        chunk = conn.execute(
+            "SELECT audio_file_path FROM chunks WHERE id = ? AND chapter_id = ?",
+            (chunk_id, chapter_id)).fetchone()
+    finally:
+        conn.close()
+    if chunk is None or not chunk["audio_file_path"]:
+        raise HTTPException(status_code=404)
+    path = Path(chunk["audio_file_path"])
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="audio/wav")
+
+
+def _splice_edit(span: str, old_words: list[str], new_words: list[str]) -> str:
+    """Rewrite `span` (original chapter text whose words are exactly
+    `old_words`) to carry `new_words`, touching only the changed words.
+
+    Whitespace — including paragraph breaks, which chunks routinely
+    straddle — is preserved everywhere except inside the edited region
+    itself, where the new words are joined by single spaces.
+    """
+    limit = min(len(old_words), len(new_words))
+    p = 0
+    while p < limit and old_words[p] == new_words[p]:
+        p += 1
+    s = 0
+    while s < limit - p and old_words[-1 - s] == new_words[-1 - s]:
+        s += 1
+
+    tokens = [(m.start(), m.end()) for m in re.finditer(r"\S+", span)]
+    start = tokens[p - 1][1] if p else 0            # end of kept prefix
+    end = tokens[len(tokens) - s][0] if s else len(span)  # start of kept suffix
+    core = " ".join(new_words[p:len(new_words) - s])
+    core_replaces = p + s < len(tokens)             # old words being swapped out
+
+    if core and core_replaces:
+        lead = span[start:tokens[p][0]] if p else ""
+        trail = span[tokens[len(tokens) - s - 1][1]:end] if s else ""
+        mid = lead + core + trail
+    elif core:                                      # pure insertion between kept words
+        gap = span[start:end]
+        if p == 0:
+            mid = core + (gap or " ")
+        elif s == 0:
+            mid = (gap or " ") + core
+        else:
+            mid = " " + core + gap
+    elif core_replaces:                             # pure deletion
+        lead = span[start:tokens[p][0]] if p else ""
+        trail = span[tokens[len(tokens) - s - 1][1]:end] if s else ""
+        if p and s:
+            mid = trail if "\n" in trail else lead if "\n" in lead else " "
+        else:
+            mid = ""
+    else:                                           # identical text
+        return span
+    return span[:start] + mid + span[end:]
+
+
+def _sync_raw_text(conn: sqlite3.Connection, user_id: int, project_id: int,
+                   chapter: sqlite3.Row, chunk: sqlite3.Row,
+                   new_text: str) -> None:
+    """Keep raw_text/source.txt authoritative after a chunk edit, so a
+    later full recast doesn't silently resurrect the pre-edit wording.
+
+    The chunk's text is the chapter text with whitespace normalized, so a
+    whitespace-tolerant match locates its span in raw_text, and the edit
+    is spliced in without disturbing surrounding formatting. If the match
+    ever fails, fall back to rebuilding raw_text from the chunk texts —
+    formatting is lost but the words stay truthful, which matters more.
+    """
+    raw = chapter["raw_text"] or ""
+    old_words = chunk["text"].split()
+    pattern = r"\s+".join(re.escape(w) for w in old_words)
+    m = re.search(pattern, raw)
+    if m is not None:
+        new_span = _splice_edit(m.group(0), old_words, new_text.split())
+        new_raw = raw[:m.start()] + new_span + raw[m.end():]
+    else:
+        texts = [new_text if r["id"] == chunk["id"] else r["text"]
+                 for r in _chunk_rows(conn, chapter["id"])]
+        new_raw = "\n\n".join(texts)
+        print(f"chunk edit: raw_text match failed for chunk {chunk['id']}, "
+              "rebuilt from chunks", flush=True)
+    conn.execute("UPDATE chapters SET raw_text = ? WHERE id = ?",
+                 (new_raw, chapter["id"]))
+    chapter_dir = storage.chapter_dir(user_id, project_id, chapter["id"])
+    chapter_dir.mkdir(parents=True, exist_ok=True)
+    (chapter_dir / "source.txt").write_text(new_raw, encoding="utf-8")
+
+
+@router.post("/projects/{project_id}/chapters/{chapter_id}/chunks/{chunk_id}")
+async def edit_chunk(request: Request, project_id: int, chapter_id: int,
+                     chunk_id: int, user=Depends(auth.require_user),
+                     text: str = Form(...)):
+    # Same normalization the chunker applies, so the cap check is honest.
+    normalized = " ".join(text.split())
+    conn = db.connect()
+    try:
+        chapter = _get_chapter(conn, user, project_id, chapter_id)
+        # Project-wide guard up front: source.txt and the assembled audio
+        # are touched below, and those must not happen if a 409 aborts.
+        generation._require_idle(conn, project_id)
+        chunk = conn.execute(
+            "SELECT * FROM chunks WHERE id = ? AND chapter_id = ?",
+            (chunk_id, chapter_id)).fetchone()
+        if chunk is None:
+            raise HTTPException(status_code=404)
+        voice = conn.execute(
+            "SELECT id FROM voice_references WHERE project_id = ?",
+            (project_id,)).fetchone()
+        if voice is None:
+            return _render_chunks(request, conn, user, project_id, chapter,
+                                  error="Upload a voice reference first.")
+        if not normalized:
+            return _render_chunks(request, conn, user, project_id, chapter,
+                                  error="Chunk text can't be empty.")
+        if len(normalized) > CHUNK_HARD_CAP:
+            return _render_chunks(
+                request, conn, user, project_id, chapter,
+                error=f"Chunk is {len(normalized)} characters — the limit is "
+                      f"{CHUNK_HARD_CAP}. Audio degrades past that; trim the "
+                      "text (or move words to a neighboring chunk).")
+
+        if normalized != chunk["text"]:
+            _sync_raw_text(conn, user["id"], project_id, chapter, chunk,
+                           normalized)
+        # The assembled chapter audio is stale the moment a chunk changes.
+        chapter_dir = storage.chapter_dir(user["id"], project_id, chapter_id)
+        (chapter_dir / "assembled.m4a").unlink(missing_ok=True)
+        (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
+
+        generation.launch_chunk_regen(conn, user["id"], project_id, chapter,
+                                      chunk, normalized)
+    finally:
+        conn.close()
+    return RedirectResponse(
+        f"/projects/{project_id}/chapters/{chapter_id}/chunks",
+        status_code=303)
