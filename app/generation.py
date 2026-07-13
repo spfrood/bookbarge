@@ -24,7 +24,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from . import assembly, auth, db, runpod_client, storage
-from .chunking import persist_chunks
+from .chunking import (PAUSE_MAX_SECONDS, PAUSE_MIN_SECONDS, pause_seconds,
+                       persist_chunks)
 from .config import settings
 from .projects import get_owned_project
 
@@ -100,26 +101,50 @@ def launch_generation(conn, user_id: int, project_id: int,
     conn.execute("UPDATE projects SET status = 'generating', "
                  "updated_at = datetime('now') WHERE id = ?", (project_id,))
     conn.commit()
+    # The fresh rows write fresh row-id-suffixed WAVs (_chunk_wav_path),
+    # so the replaced version's files would pile up orphaned — sweep them.
+    cdir = storage.chunks_dir(user_id, project_id, chapter["id"])
+    if cdir.is_dir():
+        for old in cdir.glob("*.wav"):
+            old.unlink(missing_ok=True)
     _spawn(run_chapter(user_id, project_id, chapter["id"]))
 
 
 def launch_chunk_regen(conn, user_id: int, project_id: int,
                        chapter: sqlite3.Row, chunk: sqlite3.Row,
-                       new_text: str) -> None:
+                       new_texts: list[str]) -> None:
     """Chunk-level recast: regenerate one edited chunk, keep the rest.
 
     Unlike launch_generation this does NOT re-chunk or bump the chapter
     version — every other chunk's row and audio stay valid. Only the
     edited chunk drops back to pending; the standard worker regenerates
-    whatever isn't done (repairing any errored chunks along the way) and
-    re-assembles the chapter. Caller has already validated the text
-    against CHUNK_HARD_CAP and synced raw_text/source.txt."""
+    whatever isn't done (repairing any errored chunks along the way).
+    Caller has already validated the texts against CHUNK_HARD_CAP and
+    synced raw_text/source.txt.
+
+    `new_texts` has one entry normally; several when the edit introduced
+    [pause:Ns] markers — the edited row keeps the first piece and fresh
+    rows are inserted after it (later chunks shift up to make room).
+    Pause pieces cost nothing, but text pieces flanking a new pause DO
+    regenerate: the old audio was one continuous take across the split.
+    """
     _require_idle(conn, project_id)
+    n = len(new_texts)
+    if n > 1:
+        conn.execute(
+            """UPDATE chunks SET chunk_index = chunk_index + ?
+               WHERE chapter_id = ? AND chunk_index > ?""",
+            (n - 1, chapter["id"], chunk["chunk_index"]))
     conn.execute(
         """UPDATE chunks SET text = ?, status = 'pending',
                runpod_job_id = NULL, audio_file_path = NULL,
                updated_at = datetime('now') WHERE id = ?""",
-        (new_text, chunk["id"]))
+        (new_texts[0], chunk["id"]))
+    conn.executemany(
+        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text)
+           VALUES (?, ?, ?, ?)""",
+        [(chapter["id"], chunk["chapter_version"], chunk["chunk_index"] + i, t)
+         for i, t in enumerate(new_texts[1:], start=1)])
     # Same semantics as a full recast: the audio backing any approval is
     # being replaced, and the assembled file is stale until re-assembly.
     conn.execute(
@@ -129,7 +154,7 @@ def launch_chunk_regen(conn, user_id: int, project_id: int,
            WHERE id = ?""", (chapter["id"],))
     conn.execute(
         """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
-           VALUES (?, ?, 1)""", (project_id, chapter["id"]))
+           VALUES (?, ?, ?)""", (project_id, chapter["id"], n))
     conn.execute("UPDATE projects SET status = 'generating', "
                  "updated_at = datetime('now') WHERE id = ?", (project_id,))
     conn.commit()
@@ -239,9 +264,51 @@ async def run_chapter(user_id: int, project_id: int, chapter_id: int,
     _finalize_chapter(project_id, chapter_id, ok)
 
 
+def _chunk_wav_path(user_id: int, project_id: int, chunk: sqlite3.Row):
+    """Where a chunk's audio is written. The row-id suffix makes names
+    collision-proof: a pause splice shifts later chunks' indexes, so two
+    live rows can otherwise claim the same index-derived name and one
+    would overwrite the other's audio. audio_file_path in the DB is
+    authoritative; pre-suffix files (0000.wav) stay valid until replaced."""
+    return storage.chunks_dir(user_id, project_id, chunk["chapter_id"]) \
+        / f"{chunk['chunk_index']:04d}-{chunk['id']}.wav"
+
+
+async def _process_pause_chunk(user_id: int, project_id: int,
+                               chunk: sqlite3.Row, seconds: float) -> bool:
+    """A [pause:Ns] chunk: synthesize silence locally — no RunPod, free.
+
+    Format matches the Chatterbox endpoint's output exactly (pcm_f32le,
+    mono, 24 kHz — runpod/RESULTS.md) so the concat stitch treats it like
+    any other chunk WAV. Bounds are validated at edit time; the clamp here
+    is the backstop for markers arriving via chapter upload.
+    """
+    seconds = min(max(seconds, PAUSE_MIN_SECONDS), PAUSE_MAX_SECONDS)
+    path = _chunk_wav_path(user_id, project_id, chunk)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+        "-t", f"{seconds:.3f}", "-c:a", "pcm_f32le", str(path),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        print(f"pause chunk {chunk['id']} silence failed: "
+              f"{stderr.decode(errors='replace')[:300]}", flush=True)
+        _update_chunk(chunk, "error")
+        return False
+    if not _update_chunk(chunk, "done", audio_file_path=str(path)):
+        path.unlink(missing_ok=True)  # stale version's audio
+        return True
+    _bump_job_progress(chunk["chapter_id"])
+    return True
+
+
 async def _process_chunk(user_id: int, project_id: int,
                          chunk: sqlite3.Row, voice_b64: str) -> bool:
     """Drive one chunk to done. Returns True on success."""
+    pause = pause_seconds(chunk["text"])
+    if pause is not None:
+        return await _process_pause_chunk(user_id, project_id, chunk, pause)
     job_id = chunk["runpod_job_id"]  # set = resuming an in-flight job
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -254,8 +321,7 @@ async def _process_chunk(user_id: int, project_id: int,
                 job_id = None  # job failed → resubmit on next attempt
                 continue
             audio = base64.b64decode(output["audio_base64"])
-            path = storage.chunks_dir(user_id, project_id, chunk["chapter_id"]) \
-                / f"{chunk['chunk_index']:04d}.wav"
+            path = _chunk_wav_path(user_id, project_id, chunk)
             path.write_bytes(audio)
             if not _update_chunk(chunk, "done", audio_file_path=str(path)):
                 path.unlink(missing_ok=True)  # stale version's audio

@@ -12,6 +12,10 @@ Rules (PROJECT_BIBLE.md §7 + build-order step 6):
 - Bracketed paralinguistic tags ([sigh], [clear throat], ...) are atomic:
   passed through byte-for-byte, never split, stripped, or escaped, even
   multi-word tags. They ride with whatever chunk their sentence lands in.
+- Pause markers ([pause:2.4s], 2026-07-13) are the exception: each one
+  becomes its OWN chunk, splitting the surrounding text. Pause chunks are
+  never sent to TTS — generation synthesizes silence locally (free) — so
+  the marker gives exact control over gaps the model won't produce.
 """
 
 import re
@@ -25,6 +29,40 @@ CHUNK_TARGET_MIN = 250
 # A tag is atomic even when it contains spaces ("[clear throat]").
 _ATOM_RE = re.compile(r"\[[^\]]*\]|\S+")
 _CLAUSE_END = (",", ";", ":", "—", "–")
+
+# Explicit silence: [pause:2.4s] (the "s" is optional). Bounds are enforced
+# at edit time; generation clamps as a backstop for markers that arrive via
+# upload. Kept space-free on purpose: the raw_text splice logic treats the
+# whole marker as one word.
+PAUSE_MIN_SECONDS = 0.1
+PAUSE_MAX_SECONDS = 15.0
+PAUSE_RE = re.compile(r"\[pause:(\d+(?:\.\d+)?)s?\]", re.IGNORECASE)
+
+
+def pause_seconds(text: str) -> float | None:
+    """Duration if `text` is exactly one pause marker (a pause chunk),
+    else None. Bounds are NOT checked here."""
+    m = PAUSE_RE.fullmatch(text.strip())
+    return float(m.group(1)) if m else None
+
+
+def split_pause_segments(text: str) -> list[str]:
+    """Split text into pause markers and the text runs between them, in
+    order. Markers keep the user's exact spelling (so raw_text and chunk
+    text stay matchable); empty text runs (adjacent markers, leading or
+    trailing markers) are dropped. Text runs are NOT capped here."""
+    parts = []
+    pos = 0
+    for m in PAUSE_RE.finditer(text):
+        before = text[pos:m.start()].strip()
+        if before:
+            parts.append(before)
+        parts.append(m.group(0))
+        pos = m.end()
+    tail = text[pos:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
 
 
 def _ensure_punkt() -> None:
@@ -65,14 +103,29 @@ def _split_long_sentence(sentence: str, cap: int) -> list[str]:
 
 
 def chunk_text(text: str, cap: int = CHUNK_HARD_CAP) -> list[str]:
-    """Split chapter text into TTS-ready chunks of at most `cap` chars."""
-    _ensure_punkt()
+    """Split chapter text into TTS-ready chunks of at most `cap` chars.
+
+    Pause markers each become a standalone chunk; the text between them
+    is chunked sentence-wise as before.
+    """
     # Normalize whitespace: TTS gets no meaning from layout, and uniform
     # spacing makes the cap arithmetic exact. Tags are unaffected.
     normalized = " ".join(text.split())
     if not normalized:
         return []
+    chunks: list[str] = []
+    for segment in split_pause_segments(normalized):
+        if pause_seconds(segment) is not None:
+            chunks.append(segment)
+        else:
+            chunks.extend(_chunk_segment(segment, cap))
+    return chunks
 
+
+def _chunk_segment(normalized: str, cap: int) -> list[str]:
+    """Sentence-aware chunking of one pause-free, whitespace-normalized
+    text run."""
+    _ensure_punkt()
     units: list[str] = []
     for sentence in nltk.sent_tokenize(normalized):
         if len(sentence) <= cap:

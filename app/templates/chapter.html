@@ -35,7 +35,9 @@
   <h3>Edit text (full recast)</h3>
   <p class="muted">Saving triggers a full recast: the approval toggle
   resets, the current audio is discarded, and the whole chapter
-  regenerates from the new text (version {{ chapter['version'] + 1 }}).</p>
+  regenerates from the new text (version {{ chapter['version'] + 1 }}).
+  Tip: write <code>[pause:2.4s]</code> anywhere in the text to insert
+  that much silence (generated locally, free).</p>
   <form method="post"
         action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/text"
         onsubmit="return confirm('Save and regenerate this chapter? Current audio and approval will be replaced.')">

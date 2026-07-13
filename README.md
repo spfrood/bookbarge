@@ -101,6 +101,8 @@ Distribution note: ACX/Audible currently disfavor externally-produced AI narrati
 
 Bookbarge does not automatically enrich or tag your chapter text. Chatterbox Turbo supports inline paralinguistic tags that render as real vocalized reactions — the documented set is `[clear throat]`, `[sigh]`, `[shush]`, `[cough]`, `[groan]`, `[sniff]`, `[gasp]`, `[chuckle]`, `[laugh]` — if you want that, add tags to your `.txt` files yourself before upload, using whatever tool you like. This is intentional: an automated LLM enrichment pass would mean a recurring external API cost per book on top of RunPod compute, which this project avoids by design. The chunker preserves any tags you include exactly as written.
 
+**Pauses** are the one tag Bookbarge handles itself: write `[pause:2.4s]` anywhere in your text (0.1–15 seconds) to insert exactly that much silence — useful at scene breaks and section transitions, where TTS tends to rush ahead. Pauses are synthesized locally, cost nothing to generate or adjust, and can also be added, retimed, or removed later from the per-chapter chunk editor.
+
 ---
 
 ## Out of scope (for now)

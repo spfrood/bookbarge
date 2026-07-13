@@ -48,6 +48,15 @@
   (audio turns to noise past that); to go longer, trim words into a
   neighboring chunk instead.</p>
 
+  <p class="muted"><strong>Pauses:</strong> type
+  <code>[pause:2.4s]</code> anywhere in a chunk's text to insert that much
+  silence ({{ pause_min }}&ndash;{{ pause_max|int }} seconds). On save it
+  becomes its own <em>pause chunk</em>, splitting the text around it &mdash;
+  pauses are generated locally, at no cost, though text on either side of a
+  <em>new</em> pause is re-sent (the old audio was one continuous take).
+  To change a pause, edit its number; to remove it, save it empty.
+  Pauses live in the chapter text too, so a full regeneration keeps them.</p>
+
   {% if not has_voice %}
   <p class="error">Upload a voice reference on the project page before
   editing chunks.</p>
@@ -67,8 +76,9 @@
   {% endif %}
 
   {% for k in chunks %}
-  <div class="chunk">
+  <div class="chunk {{ 'pause-chunk' if k['is_pause'] else '' }}">
     <h4>Chunk {{ k['chunk_index'] + 1 }} of {{ chunks|length }}
+      {% if k['is_pause'] %}<span class="pause-tag">&#9208; pause</span>{% endif %}
       <span class="muted">&middot; {{ k['status'] }}</span></h4>
     {% if k['audio_file_path'] %}
     {# ?v busts caches from before the no-store header (and any proxy) #}
@@ -77,8 +87,8 @@
     {% endif %}
     <form method="post"
           action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}"
-          onsubmit="return confirm('Regenerate this chunk? The chapter re-assembles and its approval resets.')">
-      <textarea name="text" rows="4" data-cap="{{ cap }}"
+          class="js-chunk-form" data-pause="{{ 1 if k['is_pause'] else 0 }}">
+      <textarea name="text" rows="{{ 1 if k['is_pause'] else 4 }}" data-cap="{{ cap }}"
                 {{ '' if has_voice else 'disabled' }}>{{ k['text'] }}</textarea>
       <p class="muted"><span class="js-count">{{ k['text']|length }}</span>/{{ cap }} characters</p>
       <button type="submit" {{ '' if has_voice else 'disabled' }}>Save &amp;
@@ -89,22 +99,41 @@
 
   {% if has_voice %}
   <script>
-    // Live count of the normalized length (what the server measures);
-    // block saving while a chunk is over the cap or empty.
+    // Live count of the normalized length (what the server measures).
+    // [pause:Ns] markers split a chunk on save, so the cap applies to the
+    // longest text piece BETWEEN markers, not the whole textarea. Empty
+    // is allowed only on an existing pause chunk (that deletes it).
+    const PAUSE_RE = /\[pause:\d+(?:\.\d+)?s?\]/gi;
     document.querySelectorAll("textarea[data-cap]").forEach((t) => {
       const cap = Number(t.dataset.cap);
       const form = t.closest("form");
+      const isPause = form.dataset.pause === "1";
       const counter = form.querySelector(".js-count");
       const button = form.querySelector("button");
       const update = () => {
-        const len = t.value.split(/\s+/).filter(Boolean).join(" ").length;
-        counter.textContent = len;
-        const bad = len > cap || len === 0;
+        const norm = t.value.split(/\s+/).filter(Boolean).join(" ");
+        const longest = Math.max(0, ...norm.split(PAUSE_RE)
+          .map((s) => s.trim().length));
+        counter.textContent = longest;
+        const bad = longest > cap || (norm.length === 0 && !isPause);
         counter.parentElement.classList.toggle("error", bad);
         button.disabled = bad;
       };
       t.addEventListener("input", update);
       update();
+    });
+    document.querySelectorAll("form.js-chunk-form").forEach((form) => {
+      form.addEventListener("submit", (e) => {
+        const t = form.querySelector("textarea");
+        const empty = t.value.trim().length === 0;
+        const msg = empty
+          ? "Remove this pause from the chapter?"
+          : (form.dataset.pause === "1"
+             ? "Update this pause? Regeneration is local and free."
+             : "Regenerate this chunk? Its approval resets; re-stitch when "
+               + "you're done editing.");
+        if (!confirm(msg)) e.preventDefault();
+      });
     });
   </script>
   {% endif %}

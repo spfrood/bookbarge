@@ -21,13 +21,19 @@ from fastapi.templating import Jinja2Templates
 from starlette.datastructures import UploadFile
 
 from . import auth, db, generation, storage
-from .chunking import CHUNK_HARD_CAP
+from .chunking import (CHUNK_HARD_CAP, PAUSE_MAX_SECONDS, PAUSE_MIN_SECONDS,
+                       pause_seconds, split_pause_segments)
 from .projects import MAX_CHAPTER_BYTES, get_owned_project
 
 router = APIRouter()
 templates: Jinja2Templates = None  # set by main.py
 
 BUSY = ("generating", "recasting")
+
+# Anything [pause…]-shaped that split_pause_segments did NOT extract is a
+# typo ([pause 2s], [pause:2,4s]…) — reject it rather than let Chatterbox
+# read it aloud as if it were a paralinguistic tag.
+_MALFORMED_PAUSE_RE = re.compile(r"\[\s*pause[^\]]*\]", re.IGNORECASE)
 
 
 def _get_chapter(conn: sqlite3.Connection, user: sqlite3.Row,
@@ -204,9 +210,13 @@ def _render_chunks(request, conn, user, project_id, chapter, error=None):
     voice = conn.execute(
         "SELECT id FROM voice_references WHERE project_id = ?",
         (project_id,)).fetchone()
+    chunks = [dict(r) for r in _chunk_rows(conn, chapter["id"])]
+    for k in chunks:
+        k["is_pause"] = pause_seconds(k["text"]) is not None
     return templates.TemplateResponse(request, "chunks.html", {
         "user": user, "project": project, "chapter": chapter,
-        "chunks": _chunk_rows(conn, chapter["id"]), "cap": CHUNK_HARD_CAP,
+        "chunks": chunks, "cap": CHUNK_HARD_CAP,
+        "pause_min": PAUSE_MIN_SECONDS, "pause_max": PAUSE_MAX_SECONDS,
         "has_voice": voice is not None, "error": error})
 
 
@@ -300,18 +310,27 @@ def _sync_raw_text(conn: sqlite3.Connection, user_id: int, project_id: int,
     is spliced in without disturbing surrounding formatting. If the match
     ever fails, fall back to rebuilding raw_text from the chunk texts —
     formatting is lost but the words stay truthful, which matters more.
+
+    Chunks with identical text repeat — [pause:2s] markers routinely do —
+    so the span is the Nth match, N counting earlier chunks with the same
+    text; blindly taking the first match would edit the wrong pause.
     """
     raw = chapter["raw_text"] or ""
     old_words = chunk["text"].split()
     pattern = r"\s+".join(re.escape(w) for w in old_words)
-    m = re.search(pattern, raw)
-    if m is not None:
+    nth = conn.execute(
+        """SELECT COUNT(*) FROM chunks WHERE chapter_id = ?
+           AND chunk_index < ? AND text = ?""",
+        (chapter["id"], chunk["chunk_index"], chunk["text"])).fetchone()[0]
+    matches = list(re.finditer(pattern, raw))
+    if len(matches) > nth:
+        m = matches[nth]
         new_span = _splice_edit(m.group(0), old_words, new_text.split())
         new_raw = raw[:m.start()] + new_span + raw[m.end():]
     else:
         texts = [new_text if r["id"] == chunk["id"] else r["text"]
                  for r in _chunk_rows(conn, chapter["id"])]
-        new_raw = "\n\n".join(texts)
+        new_raw = "\n\n".join(t for t in texts if t)
         print(f"chunk edit: raw_text match failed for chunk {chunk['id']}, "
               "rebuilt from chunks", flush=True)
     conn.execute("UPDATE chapters SET raw_text = ? WHERE id = ?",
@@ -321,10 +340,39 @@ def _sync_raw_text(conn: sqlite3.Connection, user_id: int, project_id: int,
     (chapter_dir / "source.txt").write_text(new_raw, encoding="utf-8")
 
 
+def _delete_pause_chunk(conn: sqlite3.Connection, user_id: int,
+                        project_id: int, chapter: sqlite3.Row,
+                        chunk: sqlite3.Row) -> None:
+    """Remove a pause chunk (saved empty). No generation job runs — every
+    other chunk's audio is untouched — but the assembled chapter audio is
+    now stale, so the chapter lands in the unstitched ready_for_review
+    state and the page offers a re-stitch."""
+    _sync_raw_text(conn, user_id, project_id, chapter, chunk, "")
+    conn.execute("DELETE FROM chunks WHERE id = ?", (chunk["id"],))
+    conn.execute(
+        """UPDATE chunks SET chunk_index = chunk_index - 1
+           WHERE chapter_id = ? AND chunk_index > ?""",
+        (chapter["id"], chunk["chunk_index"]))
+    conn.execute(
+        """UPDATE chapters SET processing_status = 'ready_for_review',
+               approved = 0, approved_at = NULL,
+               assembled_audio_path = NULL, assembled_at = NULL
+           WHERE id = ?""", (chapter["id"],))
+    conn.commit()
+    if chunk["audio_file_path"]:
+        Path(chunk["audio_file_path"]).unlink(missing_ok=True)
+    chapter_dir = storage.chapter_dir(user_id, project_id, chapter["id"])
+    (chapter_dir / "assembled.m4a").unlink(missing_ok=True)
+    (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
+
+
 @router.post("/projects/{project_id}/chapters/{chapter_id}/chunks/{chunk_id}")
 async def edit_chunk(request: Request, project_id: int, chapter_id: int,
                      chunk_id: int, user=Depends(auth.require_user),
-                     text: str = Form(...)):
+                     # Default (not required): browsers submit an empty
+                     # textarea as blank, which FastAPI treats as missing —
+                     # and empty is meaningful here (deletes a pause chunk).
+                     text: str = Form("")):
     # Same normalization the chunker applies, so the cap check is honest.
     normalized = " ".join(text.split())
     conn = db.connect()
@@ -338,21 +386,49 @@ async def edit_chunk(request: Request, project_id: int, chapter_id: int,
             (chunk_id, chapter_id)).fetchone()
         if chunk is None:
             raise HTTPException(status_code=404)
+        if not normalized:
+            # Saving a pause chunk empty deletes it — the documented way
+            # to remove a pause. Needs no voice and no generation job.
+            if pause_seconds(chunk["text"]) is not None:
+                _delete_pause_chunk(conn, user["id"], project_id, chapter,
+                                    chunk)
+                return RedirectResponse(
+                    f"/projects/{project_id}/chapters/{chapter_id}/chunks",
+                    status_code=303)
+            return _render_chunks(request, conn, user, project_id, chapter,
+                                  error="Chunk text can't be empty.")
         voice = conn.execute(
             "SELECT id FROM voice_references WHERE project_id = ?",
             (project_id,)).fetchone()
         if voice is None:
             return _render_chunks(request, conn, user, project_id, chapter,
                                   error="Upload a voice reference first.")
-        if not normalized:
-            return _render_chunks(request, conn, user, project_id, chapter,
-                                  error="Chunk text can't be empty.")
-        if len(normalized) > CHUNK_HARD_CAP:
-            return _render_chunks(
-                request, conn, user, project_id, chapter,
-                error=f"Chunk is {len(normalized)} characters — the limit is "
-                      f"{CHUNK_HARD_CAP}. Audio degrades past that; trim the "
-                      "text (or move words to a neighboring chunk).")
+
+        # [pause:Ns] markers split the text: each marker becomes its own
+        # silence chunk, so the cap applies per text piece between them.
+        segments = split_pause_segments(normalized)
+        for seg in segments:
+            dur = pause_seconds(seg)
+            if dur is not None:
+                if not PAUSE_MIN_SECONDS <= dur <= PAUSE_MAX_SECONDS:
+                    return _render_chunks(
+                        request, conn, user, project_id, chapter,
+                        error=f"[pause:{dur:g}s] is out of range — pauses "
+                              f"must be {PAUSE_MIN_SECONDS:g} to "
+                              f"{PAUSE_MAX_SECONDS:g} seconds.")
+            elif _MALFORMED_PAUSE_RE.search(seg):
+                return _render_chunks(
+                    request, conn, user, project_id, chapter,
+                    error="Unrecognized pause marker — write it exactly as "
+                          "[pause:2.4s], with no spaces inside the brackets.")
+            elif len(seg) > CHUNK_HARD_CAP:
+                where = ("A text piece between pauses" if len(segments) > 1
+                         else "Chunk")
+                return _render_chunks(
+                    request, conn, user, project_id, chapter,
+                    error=f"{where} is {len(seg)} characters — the limit is "
+                          f"{CHUNK_HARD_CAP}. Audio degrades past that; trim "
+                          "the text (or move words to a neighboring chunk).")
 
         if normalized != chunk["text"]:
             _sync_raw_text(conn, user["id"], project_id, chapter, chunk,
@@ -363,7 +439,7 @@ async def edit_chunk(request: Request, project_id: int, chapter_id: int,
         (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
 
         generation.launch_chunk_regen(conn, user["id"], project_id, chapter,
-                                      chunk, normalized)
+                                      chunk, segments)
     finally:
         conn.close()
     return RedirectResponse(
