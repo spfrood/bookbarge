@@ -237,7 +237,10 @@ async def chunk_audio(request: Request, project_id: int, chapter_id: int,
     path = Path(chunk["audio_file_path"])
     if not path.is_file():
         raise HTTPException(status_code=404)
-    return FileResponse(path, media_type="audio/wav")
+    # no-store: the file is replaced in place on re-roll; without this,
+    # browsers heuristically cache and replay the pre-edit audio.
+    return FileResponse(path, media_type="audio/wav",
+                        headers={"Cache-Control": "no-store"})
 
 
 def _splice_edit(span: str, old_words: list[str], new_words: list[str]) -> str:

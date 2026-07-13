@@ -71,8 +71,9 @@
     <h4>Chunk {{ k['chunk_index'] + 1 }} of {{ chunks|length }}
       <span class="muted">&middot; {{ k['status'] }}</span></h4>
     {% if k['audio_file_path'] %}
+    {# ?v busts caches from before the no-store header (and any proxy) #}
     <audio controls preload="none"
-           src="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}/audio"></audio>
+           src="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}/audio?v={{ (k['updated_at'] or '') | urlencode }}"></audio>
     {% endif %}
     <form method="post"
           action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}"

@@ -119,7 +119,7 @@
       <td class="listen">
         {% if c['assembled_audio_path'] %}
         <audio controls preload="none"
-               src="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio"></audio>
+               src="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio?v={{ (c['assembled_at'] or '') | urlencode }}"></audio>
         <a class="download"
            href="/projects/{{ project['id'] }}/chapters/{{ c['id'] }}/audio?download=1">download</a>
         {% elif c['processing_status'] == 'ready_for_review' %}

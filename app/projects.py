@@ -246,12 +246,16 @@ async def chapter_audio(request: Request, project_id: int, chapter_id: int,
         raise HTTPException(status_code=404)
 
     media_type = "audio/mpeg" if path.suffix == ".mp3" else "audio/mp4"
+    # no-store: recast/re-stitch replaces the file in place; without this,
+    # browsers heuristically cache and replay the pre-edit audio.
+    headers = {"Cache-Control": "no-store"}
     if download:
         stem = Path(chapter["filename"] or "chapter").stem
         safe = "".join(ch if ch.isalnum() or ch in "-_ " else "_" for ch in stem)
         filename = f"{chapter['chapter_number']:02d}-{safe}{path.suffix}"
-        return FileResponse(path, media_type=media_type, filename=filename)
-    return FileResponse(path, media_type=media_type)
+        return FileResponse(path, media_type=media_type, filename=filename,
+                            headers=headers)
+    return FileResponse(path, media_type=media_type, headers=headers)
 
 
 @router.get("/projects/{project_id}/audiobook")
