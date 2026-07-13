@@ -28,6 +28,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Bookbarge", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
+# Stylesheet cache-buster: mtime read once per process, so every deploy
+# restart that ships a CSS change also changes the URL browsers fetch.
+templates.env.globals["css_version"] = int(
+    (APP_DIR / "static" / "style.css").stat().st_mtime)
 
 auth.templates = templates
 projects.templates = templates

@@ -90,7 +90,11 @@ table.listing th, table.listing td {
 .inline-form label { display: block; margin: 0.5rem 0; }
 form button.danger { background: #c0392b; }
 button.small { padding: 0.25rem 0.75rem; font-size: 0.9rem; margin-top: 0; }
-td.listen audio { display: block; width: 15rem; height: 2rem; }
+/* The seek bar gets whatever width is left after buttons and timestamps,
+   so a narrow player renders an unusably tiny scrubber on real-length
+   chapters — reserve enough column for it to breathe. */
+td.listen { min-width: 22rem; }
+td.listen audio { display: block; width: 100%; height: 2rem; }
 button.small.approved { background: #2e7d32; }
 .checklist { border-left: 3px solid var(--muted); padding-left: 0.75rem; }
 details.meta-edit { margin: 1rem 0; }

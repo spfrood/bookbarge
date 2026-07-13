@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Bookbarge{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  {# ?v busts browser caches whenever the stylesheet changes on disk #}
+  <link rel="stylesheet" href="/static/style.css?v={{ css_version }}">
 </head>
 <body>
   <header>
