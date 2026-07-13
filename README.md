@@ -118,4 +118,4 @@ See `PROJECT_BIBLE.md` for the full list and reasoning.
 
 ## License
 
-Project code license: TBD. Chatterbox Turbo itself is MIT-licensed by ResembleAI.
+[MIT](LICENSE). Chatterbox Turbo itself is also MIT-licensed by ResembleAI (including weights).

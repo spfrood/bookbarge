@@ -1,5 +1,12 @@
 # Bookbarge — Claude Code Build Prompts
 
+> **Historical artifact — kept for documentary and reference purposes only.**
+> These are the phase-by-phase prompts that drove the original build of the
+> project's foundation (Phases 0–13, completed 2026-07-12). They are not
+> maintained: work since then has been driven conversationally and is
+> recorded in `PROJECT_BIBLE.md`'s dated annotations and the git history.
+> For the current state of the system, read `PROJECT_BIBLE.md`.
+
 Use these with Fable 5 (`/model fable`, or `claude --model claude-fable-5`, or set `"model": "claude-fable-5"` in `.claude/settings.json` for this project so it's the default without retyping it every session).
 
 ## How to use this document
