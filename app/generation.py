@@ -122,11 +122,12 @@ def stage_chunk_edit(conn, user_id: int, project_id: int,
     instant, so editing many chunks in a row loses nothing.)
 
     The edited chunk drops to pending — shown as "needs regeneration" —
-    and the /stitch route later regenerates every non-done chunk in one
-    worker pass, then re-assembles. Nothing here re-chunks or bumps the
-    chapter version: every other chunk's row and audio stay valid.
-    Caller has already validated the texts against CHUNK_HARD_CAP and
-    synced raw_text/source.txt.
+    until a per-chunk "save & regenerate now", the chapter's batch
+    regenerate, or a full recast produces fresh audio. Nothing here
+    re-chunks or bumps the chapter version: every other chunk's row and
+    audio stay valid. Caller has already validated the texts against
+    CHUNK_HARD_CAP and synced raw_text/source.txt. Returns the affected
+    row ids so a save-and-regenerate can target exactly this edit.
 
     `new_texts` has one entry normally; several when the edit introduced
     [pause:Ns] markers — the edited row keeps the first piece and fresh
@@ -150,16 +151,18 @@ def stage_chunk_edit(conn, user_id: int, project_id: int,
                paragraph_gap_after = ?,
                updated_at = datetime('now') WHERE id = ?""",
         (new_texts[0], gap_after if n == 1 else 0, chunk["id"]))
-    conn.executemany(
-        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text,
-                               paragraph_gap_after)
-           VALUES (?, ?, ?, ?, ?)""",
-        [(chapter["id"], chunk["chapter_version"], chunk["chunk_index"] + i, t,
-          gap_after if i == n - 1 else 0)
-         for i, t in enumerate(new_texts[1:], start=1)])
+    ids = [chunk["id"]]
+    for i, t in enumerate(new_texts[1:], start=1):
+        cur = conn.execute(
+            """INSERT INTO chunks (chapter_id, chapter_version, chunk_index,
+                                   text, paragraph_gap_after)
+               VALUES (?, ?, ?, ?, ?)""",
+            (chapter["id"], chunk["chapter_version"], chunk["chunk_index"] + i,
+             t, gap_after if i == n - 1 else 0))
+        ids.append(cur.lastrowid)
     # Same semantics as a pause delete: approval and the assembled audio
     # are stale the moment the text changes; the chapter sits in the
-    # unstitched ready_for_review state until the batch regeneration.
+    # unstitched ready_for_review state until regeneration.
     conn.execute(
         """UPDATE chapters SET processing_status = 'ready_for_review',
                approved = 0, approved_at = NULL,
@@ -169,16 +172,68 @@ def stage_chunk_edit(conn, user_id: int, project_id: int,
     # The superseded take must not stay playable (or land in a stitch).
     if chunk["audio_file_path"]:
         Path(chunk["audio_file_path"]).unlink(missing_ok=True)
+    return ids
+
+
+def launch_regen(conn, user_id: int, project_id: int, chapter_id: int,
+                 total: int, chunk_ids: list[int] | None = None) -> None:
+    """Regenerate staged chunks WITHOUT re-stitching (2026-07-17).
+
+    chunk_ids limits the pass to one edit's rows (per-chunk "save &
+    regenerate now" — listen before committing to a stitch); None means
+    every non-done chunk in the chapter. Caller has run the guards and
+    holds the transaction; this flips the busy state and spawns."""
+    conn.execute(
+        "UPDATE chapters SET processing_status = 'recasting' WHERE id = ?",
+        (chapter_id,))
+    conn.execute(
+        """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
+           VALUES (?, ?, ?)""", (project_id, chapter_id, total))
+    conn.execute("UPDATE projects SET status = 'generating', "
+                 "updated_at = datetime('now') WHERE id = ?", (project_id,))
+    conn.commit()
+    _spawn(run_chapter(user_id, project_id, chapter_id, assemble=False,
+                       chunk_ids=chunk_ids))
+
+
+@router.post("/projects/{project_id}/chapters/{chapter_id}/regenerate")
+async def regenerate_chapter_chunks(request: Request, project_id: int,
+                                    chapter_id: int,
+                                    user=Depends(auth.require_user)):
+    """Batch-regenerate every chunk marked needs-regeneration (staged
+    edits, retimed pauses, errored chunks) — no re-stitch, so each chunk
+    can be auditioned before the final assembly."""
+    conn = db.connect()
+    try:
+        get_owned_project(conn, user, project_id)
+        chapter = conn.execute(
+            "SELECT * FROM chapters WHERE id = ? AND project_id = ?",
+            (chapter_id, project_id)).fetchone()
+        if chapter is None:
+            raise HTTPException(status_code=404)
+        _require_idle(conn, project_id)
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE chapter_id = ? "
+            "AND status != 'done'", (chapter_id,)).fetchone()[0]
+        if pending == 0:
+            raise HTTPException(status_code=422,
+                                detail="No chunks are waiting for "
+                                       "regeneration.")
+        launch_regen(conn, user["id"], project_id, chapter_id, pending)
+    finally:
+        conn.close()
+    return RedirectResponse(
+        f"/projects/{project_id}/chapters/{chapter_id}/chunks", status_code=303)
 
 
 @router.post("/projects/{project_id}/chapters/{chapter_id}/stitch")
 async def stitch_chapter(request: Request, project_id: int, chapter_id: int,
                          user=Depends(auth.require_user)):
-    """Regenerate staged chunk edits and re-stitch (2026-07-13; staged
-    saves 2026-07-17). Runs the standard worker: every non-done chunk —
-    edited text, retimed pauses, errored chunks — is (re)generated in one
-    pass, then the chapter assembles. No-GPU-cost when everything is
-    already done (a pure re-stitch)."""
+    """Re-stitch the chapter audio (2026-07-13; assemble-ONLY since
+    2026-07-17). Refused while any chunk still needs regeneration —
+    assembly includes only done chunks, so stitching early would silently
+    drop the pending ones' audio. Regeneration is its own step (the
+    per-chunk buttons or /regenerate). Never costs GPU."""
     conn = db.connect()
     try:
         get_owned_project(conn, user, project_id)
@@ -193,6 +248,14 @@ async def stitch_chapter(request: Request, project_id: int, chapter_id: int,
         if n == 0:
             raise HTTPException(status_code=422,
                                 detail="No chunks to stitch — generate first.")
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE chapter_id = ? "
+            "AND status != 'done'", (chapter_id,)).fetchone()[0]
+        if pending:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{pending} chunk(s) still need regeneration — "
+                       "regenerate them before stitching.")
         conn.execute("UPDATE chapters SET processing_status = 'recasting' "
                      "WHERE id = ?", (chapter_id,))
         conn.execute(
@@ -236,7 +299,8 @@ async def project_status(request: Request, project_id: int,
 # --- worker -------------------------------------------------------------------
 
 async def run_chapter(user_id: int, project_id: int, chapter_id: int,
-                      assemble: bool = True) -> None:
+                      assemble: bool = True,
+                      chunk_ids: list[int] | None = None) -> None:
     """Generate every unfinished chunk of one chapter, then finalize.
 
     assemble=False (chunk-level edits, 2026-07-13): skip the chapter
@@ -244,16 +308,25 @@ async def run_chapter(user_id: int, project_id: int, chapter_id: int,
     generation time — so consecutive edits stay fast. The user triggers
     one explicit re-stitch when done (the /stitch route), which runs this
     same worker with no pending chunks and assemble=True.
+
+    chunk_ids (2026-07-17): restrict the pass to those rows — the
+    per-chunk "save & regenerate now". Other staged chunks stay pending
+    on purpose (the user hasn't paid for them yet), so finalize must not
+    treat them as a failure.
     """
     try:
         voice_path = storage.voice_dir(user_id, project_id) / "reference.wav"
         voice_b64 = base64.b64encode(voice_path.read_bytes()).decode()
 
+        sql = ("SELECT * FROM chunks WHERE chapter_id = ? AND status != 'done'")
+        params: list = [chapter_id]
+        if chunk_ids:
+            sql += f" AND id IN ({','.join('?' * len(chunk_ids))})"
+            params += chunk_ids
         conn = db.connect()
         try:
-            chunks = conn.execute(
-                "SELECT * FROM chunks WHERE chapter_id = ? AND status != 'done' "
-                "ORDER BY chunk_index", (chapter_id,)).fetchall()
+            chunks = conn.execute(sql + " ORDER BY chunk_index",
+                                  params).fetchall()
         finally:
             conn.close()
 
@@ -272,7 +345,8 @@ async def run_chapter(user_id: int, project_id: int, chapter_id: int,
     except Exception as exc:  # voice file missing, DB trouble, ...
         print(f"generation fatal for chapter {chapter_id}: {exc!r}", flush=True)
         ok = False
-    _finalize_chapter(project_id, chapter_id, ok)
+    _finalize_chapter(project_id, chapter_id, ok,
+                      require_all_done=chunk_ids is None)
 
 
 def _chunk_wav_path(user_id: int, project_id: int, chunk: sqlite3.Row):
@@ -402,14 +476,17 @@ def _bump_job_progress(chapter_id: int) -> None:
         conn.close()
 
 
-def _finalize_chapter(project_id: int, chapter_id: int, ok: bool) -> None:
+def _finalize_chapter(project_id: int, chapter_id: int, ok: bool,
+                      require_all_done: bool = True) -> None:
     conn = db.connect()
     try:
-        # Trust the DB, not the in-memory flag alone: every chunk must be done.
+        # Trust the DB, not the in-memory flag alone: every chunk must be
+        # done — except after a targeted per-chunk regen, where OTHER
+        # chunks legitimately stay staged ("needs regeneration").
         remaining = conn.execute(
             "SELECT COUNT(*) FROM chunks WHERE chapter_id = ? AND status != 'done'",
             (chapter_id,)).fetchone()[0]
-        success = ok and remaining == 0
+        success = ok and (remaining == 0 or not require_all_done)
         conn.execute(
             "UPDATE chapters SET processing_status = ? WHERE id = ? "
             "AND processing_status IN ('generating', 'recasting')",

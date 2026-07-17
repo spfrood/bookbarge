@@ -59,16 +59,19 @@
   </script>
   {% endif %}
   <p class="muted">Fix a word or re-roll a single line without regenerating
-  the whole chapter. Saving a chunk is <strong>instant</strong> — it just
-  stores the text and marks the chunk
-  <span class="needs-regen">needs regeneration</span>. Edit and save as
-  many chunks as you like, then click the regenerate button once: only
-  the chunks you touched are re-sent for generation (seconds, not
-  minutes), and the chapter re-stitches automatically. Saving a chunk
-  <em>unchanged</em> marks it for a re-roll — useful when the words are
-  right but the read is off. Each chunk must stay at or under
+  the whole chapter. <strong>Save</strong> is instant — it stores the text
+  and marks the chunk <span class="needs-regen">needs regeneration</span>.
+  <strong>Save &amp; regenerate now</strong> also regenerates just that
+  chunk (seconds), so you can listen to the new take right away. Chunks
+  saved-but-not-regenerated can be done in one batch with the regenerate
+  button below; <strong>re-stitching is the separate final step</strong>
+  once every chunk sounds right. Saving a chunk <em>unchanged</em> and
+  regenerating re-rolls its delivery — useful when the words are right
+  but the read is off. Each chunk must stay at or under
   <strong>{{ cap }} characters</strong> (audio turns to noise past that);
-  to go longer, trim words into a neighboring chunk instead.</p>
+  to go longer, trim words into a neighboring chunk instead. Typed text
+  survives page refreshes until you save it (drafts are kept per-chunk in
+  this browser tab).</p>
 
   <p class="muted"><strong>Pauses:</strong> type
   <code>[pause:2.4s]</code> anywhere in a chunk's text to insert that much
@@ -97,22 +100,25 @@
   <div class="stitch-notice">
     {% if pending %}
     <p><strong>{{ pending }} chunk{{ 's' if pending != 1 else '' }}
-    saved and waiting for regeneration.</strong> When you're done editing,
-    regenerate them all in one pass — only edited text chunks are re-sent
-    for generation (pauses are free) — and the chapter re-stitches
-    automatically.</p>
-    {% else %}
-    <p><strong>Chapter audio is not stitched.</strong> When you're done
-    editing, re-stitch to rebuild the listenable chapter (no generation
-    cost, takes a moment for long chapters).</p>
-    {% endif %}
-    <form method="post"
-          action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/stitch"
-          {% if pending %}
-          onsubmit="return confirm('Regenerate {{ pending }} chunk{{ 's' if pending != 1 else '' }} and re-stitch the chapter? Edited text chunks are re-sent for generation.')"
-          {% endif %}>
+    waiting for regeneration.</strong> Regenerate them in one pass (only
+    edited text chunks are re-sent; pauses are free), listen, then
+    re-stitch when everything sounds right.</p>
+    <form method="post" class="inline-form"
+          action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/regenerate"
+          onsubmit="return confirm('Regenerate {{ pending }} chunk{{ 's' if pending != 1 else '' }}? Edited text chunks are re-sent for generation (pauses are free). No re-stitch yet.')">
       <button type="submit" {{ 'disabled' if sibling_busy else '' }}>
-        {{ 'Regenerate {} edited chunk{} & re-stitch'.format(pending, 's' if pending != 1 else '') if pending else 'Re-stitch chapter audio' }}</button>
+        Regenerate {{ pending }} edited chunk{{ 's' if pending != 1 else '' }}</button>
+    </form>
+    {% else %}
+    <p><strong>Chapter audio is not stitched.</strong> When every chunk
+    sounds right, re-stitch to rebuild the listenable chapter (no
+    generation cost, takes a moment for long chapters).</p>
+    {% endif %}
+    <form method="post" class="inline-form"
+          action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/stitch">
+      <button type="submit" {{ 'disabled' if sibling_busy or pending else '' }}
+              title="{{ 'Regenerate the edited chunks first' if pending else '' }}">
+        Re-stitch chapter audio</button>
     </form>
   </div>
   {% endif %}
@@ -134,9 +140,11 @@
           action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}"
           class="js-chunk-form" data-pause="{{ 1 if k['is_pause'] else 0 }}">
       <textarea name="text" rows="{{ 1 if k['is_pause'] else 4 }}" data-cap="{{ cap }}"
+                data-chunk-id="{{ k['id'] }}"
                 {{ 'disabled' if locked else '' }}>{{ k['text'] }}</textarea>
       <p class="muted"><span class="js-count">{{ k['text']|length }}</span>/{{ cap }} characters</p>
-      <button type="submit" {{ 'disabled' if locked else '' }}>Save chunk</button>
+      <button type="submit" name="action" value="save" {{ 'disabled' if locked else '' }}>Save</button>
+      <button type="submit" name="action" value="regen" {{ 'disabled' if locked else '' }}>Save &amp; regenerate now</button>
     </form>
   </div>
   {% endfor %}
@@ -154,7 +162,8 @@
       const form = t.closest("form");
       const isPause = form.dataset.pause === "1";
       const counter = form.querySelector(".js-count");
-      const button = form.querySelector("button");
+      const buttons = form.querySelectorAll("button");
+      const draftKey = "bb-draft-" + t.dataset.chunkId;
       const update = () => {
         const norm = t.value.split(/\s+/).filter(Boolean).join(" ");
         const longest = Math.max(0, ...norm.split(PAUSE_RE)
@@ -162,22 +171,47 @@
         counter.textContent = longest;
         const bad = longest > cap || (norm.length === 0 && !isPause);
         counter.parentElement.classList.toggle("error", bad);
-        button.disabled = bad;
+        buttons.forEach((b) => { b.disabled = bad; });
       };
-      t.addEventListener("input", update);
+      t.addEventListener("input", () => {
+        // Draft survives any page reload (saves, regen locks) until the
+        // text is actually saved — then it matches and clears below.
+        if (t.value === t.defaultValue) sessionStorage.removeItem(draftKey);
+        else sessionStorage.setItem(draftKey, t.value);
+        update();
+      });
+      const draft = sessionStorage.getItem(draftKey);
+      if (draft !== null) {
+        if (draft === t.defaultValue) {
+          sessionStorage.removeItem(draftKey);
+        } else {
+          t.value = draft;
+          counter.parentElement.insertAdjacentHTML(
+            "beforeend", ' <span class="needs-regen">unsaved draft restored</span>');
+        }
+      }
       update();
     });
     document.querySelectorAll("form.js-chunk-form").forEach((form) => {
       form.addEventListener("submit", (e) => {
         const t = form.querySelector("textarea");
         const empty = t.value.trim().length === 0;
-        const msg = empty
-          ? "Remove this pause from the chapter?"
-          : (form.dataset.pause === "1"
-             ? "Save this pause? It's applied (free) at the next "
-               + "regenerate & re-stitch."
-             : "Save this chunk? It's marked for regeneration — nothing "
-               + "is re-sent until you click the regenerate button.");
+        const regen = e.submitter && e.submitter.value === "regen";
+        const isPause = form.dataset.pause === "1";
+        let msg;
+        if (empty) {
+          msg = "Remove this pause from the chapter?";
+        } else if (regen) {
+          msg = isPause
+            ? "Save and regenerate this pause now? (local and free)"
+            : "Save and regenerate this chunk now? Just this chunk is "
+              + "re-sent for generation; the page unlocks when it's done.";
+        } else {
+          msg = isPause
+            ? "Save this pause? It's applied (free) when you regenerate."
+            : "Save this chunk? It's marked for regeneration — nothing "
+              + "is re-sent until you regenerate.";
+        }
         if (!confirm(msg)) e.preventDefault();
       });
     });

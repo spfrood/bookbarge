@@ -441,7 +441,11 @@ async def edit_chunk(request: Request, project_id: int, chapter_id: int,
                      # Default (not required): browsers submit an empty
                      # textarea as blank, which FastAPI treats as missing —
                      # and empty is meaningful here (deletes a pause chunk).
-                     text: str = Form("")):
+                     text: str = Form(""),
+                     # "save" stages the edit; "regen" also regenerates
+                     # exactly this edit's chunks right away (no stitch) so
+                     # the new take can be auditioned before assembly.
+                     action: str = Form("save")):
     # Same normalization the chunker applies, so the cap check is honest.
     normalized = " ".join(text.split())
     conn = db.connect()
@@ -507,8 +511,11 @@ async def edit_chunk(request: Request, project_id: int, chapter_id: int,
         (chapter_dir / "assembled.m4a").unlink(missing_ok=True)
         (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
 
-        generation.stage_chunk_edit(conn, user["id"], project_id, chapter,
-                                    chunk, segments)
+        ids = generation.stage_chunk_edit(conn, user["id"], project_id,
+                                          chapter, chunk, segments)
+        if action == "regen":
+            generation.launch_regen(conn, user["id"], project_id, chapter_id,
+                                    total=len(ids), chunk_ids=ids)
     finally:
         conn.close()
     return RedirectResponse(
