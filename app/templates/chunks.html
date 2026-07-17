@@ -38,39 +38,81 @@
   editing is only available while the generated chunks are still around.</p>
 
   {% else %}
+  {% set locked = not has_voice or sibling_busy %}
+  {% if sibling_busy %}
+  <p class="error">Another chapter in this project is generating right now
+  — regeneration runs one chapter at a time, so saving chunks and
+  re-stitching are locked. This page will unlock automatically when it
+  finishes. (Listening is fine.)</p>
+  <script>
+    (function () {
+      const timer = setInterval(async () => {
+        try {
+          const r = await fetch("/projects/{{ project['id'] }}/status.json");
+          if (!r.ok) return;
+          const busy = (await r.json()).chapters.some(
+            (c) => c.status === "generating" || c.status === "recasting");
+          if (!busy) { clearInterval(timer); location.reload(); }
+        } catch {}
+      }, 2000);
+    })();
+  </script>
+  {% endif %}
   <p class="muted">Fix a word or re-roll a single line without regenerating
-  the whole chapter: only the chunk you save is sent back for generation
-  (seconds, not minutes), and its approval resets. Saving a chunk
-  <em>unchanged</em> re-rolls its delivery — useful when the words are
-  right but the read is off. Edit as many chunks as you like, then
-  <strong>re-stitch once at the end</strong> to rebuild the chapter audio.
-  Each chunk must stay at or under <strong>{{ cap }} characters</strong>
-  (audio turns to noise past that); to go longer, trim words into a
-  neighboring chunk instead.</p>
+  the whole chapter. Saving a chunk is <strong>instant</strong> — it just
+  stores the text and marks the chunk
+  <span class="needs-regen">needs regeneration</span>. Edit and save as
+  many chunks as you like, then click the regenerate button once: only
+  the chunks you touched are re-sent for generation (seconds, not
+  minutes), and the chapter re-stitches automatically. Saving a chunk
+  <em>unchanged</em> marks it for a re-roll — useful when the words are
+  right but the read is off. Each chunk must stay at or under
+  <strong>{{ cap }} characters</strong> (audio turns to noise past that);
+  to go longer, trim words into a neighboring chunk instead.</p>
 
   <p class="muted"><strong>Pauses:</strong> type
   <code>[pause:2.4s]</code> anywhere in a chunk's text to insert that much
   silence ({{ pause_min }}&ndash;{{ pause_max|int }} seconds). On save it
   becomes its own <em>pause chunk</em>, splitting the text around it &mdash;
   pauses are generated locally, at no cost, though text on either side of a
-  <em>new</em> pause is re-sent (the old audio was one continuous take).
+  <em>new</em> pause is re-sent at the next regeneration (the old audio was
+  one continuous take).
   To change a pause, edit its number; to remove it, save it empty.
-  Pauses live in the chapter text too, so a full regeneration keeps them.</p>
+  Pauses live in the chapter text too, so a full regeneration keeps them.
+  {%- if paragraph_gap > 0 %}
+  Chunks marked <span class="para-tag">&para;</span> end a paragraph:
+  stitching adds a {{ paragraph_gap }}&#8202;s gap there automatically,
+  unless a pause chunk sits at that boundary (your timing wins).
+  {%- endif %}</p>
+
+  {% include "partials/tag_help.html" %}
 
   {% if not has_voice %}
   <p class="error">Upload a voice reference on the project page before
   editing chunks.</p>
   {% endif %}
 
-  {% if not chapter['assembled_audio_path'] %}
+  {% set pending = chunks | rejectattr('status', 'equalto', 'done') | list | length %}
+  {% if not chapter['assembled_audio_path'] or pending %}
   <div class="stitch-notice">
-    <p><strong>Chapter audio is not stitched.</strong> Chunk edits only
-    regenerate the edited line — when you're done editing, re-stitch to
-    rebuild the listenable chapter (no generation cost, takes a moment
-    for long chapters).</p>
+    {% if pending %}
+    <p><strong>{{ pending }} chunk{{ 's' if pending != 1 else '' }}
+    saved and waiting for regeneration.</strong> When you're done editing,
+    regenerate them all in one pass — only edited text chunks are re-sent
+    for generation (pauses are free) — and the chapter re-stitches
+    automatically.</p>
+    {% else %}
+    <p><strong>Chapter audio is not stitched.</strong> When you're done
+    editing, re-stitch to rebuild the listenable chapter (no generation
+    cost, takes a moment for long chapters).</p>
+    {% endif %}
     <form method="post"
-          action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/stitch">
-      <button type="submit">Re-stitch chapter audio</button>
+          action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/stitch"
+          {% if pending %}
+          onsubmit="return confirm('Regenerate {{ pending }} chunk{{ 's' if pending != 1 else '' }} and re-stitch the chapter? Edited text chunks are re-sent for generation.')"
+          {% endif %}>
+      <button type="submit" {{ 'disabled' if sibling_busy else '' }}>
+        {{ 'Regenerate {} edited chunk{} & re-stitch'.format(pending, 's' if pending != 1 else '') if pending else 'Re-stitch chapter audio' }}</button>
     </form>
   </div>
   {% endif %}
@@ -79,7 +121,10 @@
   <div class="chunk {{ 'pause-chunk' if k['is_pause'] else '' }}">
     <h4>Chunk {{ k['chunk_index'] + 1 }} of {{ chunks|length }}
       {% if k['is_pause'] %}<span class="pause-tag">&#9208; pause</span>{% endif %}
-      <span class="muted">&middot; {{ k['status'] }}</span></h4>
+      {% if k['paragraph_gap_after'] and paragraph_gap > 0 %}<span class="para-tag" title="Ends a paragraph — {{ paragraph_gap }}s gap added at stitch">&para;</span>{% endif %}
+      {% if k['status'] == 'done' %}<span class="muted">&middot; done</span>
+      {% elif k['status'] == 'error' %}<span class="chunk-error">error — regenerate to retry</span>
+      {% else %}<span class="needs-regen">needs regeneration</span>{% endif %}</h4>
     {% if k['audio_file_path'] %}
     {# ?v busts caches from before the no-store header (and any proxy) #}
     <audio controls preload="none"
@@ -89,15 +134,15 @@
           action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/chunks/{{ k['id'] }}"
           class="js-chunk-form" data-pause="{{ 1 if k['is_pause'] else 0 }}">
       <textarea name="text" rows="{{ 1 if k['is_pause'] else 4 }}" data-cap="{{ cap }}"
-                {{ '' if has_voice else 'disabled' }}>{{ k['text'] }}</textarea>
+                {{ 'disabled' if locked else '' }}>{{ k['text'] }}</textarea>
       <p class="muted"><span class="js-count">{{ k['text']|length }}</span>/{{ cap }} characters</p>
-      <button type="submit" {{ '' if has_voice else 'disabled' }}>Save &amp;
-        regenerate this chunk</button>
+      <button type="submit" {{ 'disabled' if locked else '' }}>Save chunk</button>
     </form>
   </div>
   {% endfor %}
 
-  {% if has_voice %}
+  {# not while locked: this script re-enables buttons as a side effect #}
+  {% if not locked %}
   <script>
     // Live count of the normalized length (what the server measures).
     // [pause:Ns] markers split a chunk on save, so the cap applies to the
@@ -129,9 +174,10 @@
         const msg = empty
           ? "Remove this pause from the chapter?"
           : (form.dataset.pause === "1"
-             ? "Update this pause? Regeneration is local and free."
-             : "Regenerate this chunk? Its approval resets; re-stitch when "
-               + "you're done editing.");
+             ? "Save this pause? It's applied (free) at the next "
+               + "regenerate & re-stitch."
+             : "Save this chunk? It's marked for regeneration — nothing "
+               + "is re-sent until you click the regenerate button.");
         if (!confirm(msg)) e.preventDefault();
       });
     });

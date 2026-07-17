@@ -16,6 +16,10 @@ Rules (PROJECT_BIBLE.md §7 + build-order step 6):
   becomes its OWN chunk, splitting the surrounding text. Pause chunks are
   never sent to TTS — generation synthesizes silence locally (free) — so
   the marker gives exact control over gaps the model won't produce.
+- Paragraph breaks (blank lines, 2026-07-17) are always chunk boundaries:
+  a chunk never packs text from two paragraphs. The last chunk of each
+  paragraph is flagged paragraph_gap_after so assembly can insert a small
+  automatic silence at the turn (PROJECT_BIBLE.md §14 → §7).
 """
 
 import re
@@ -37,6 +41,11 @@ _CLAUSE_END = (",", ";", ":", "—", "–")
 PAUSE_MIN_SECONDS = 0.1
 PAUSE_MAX_SECONDS = 15.0
 PAUSE_RE = re.compile(r"\[pause:(\d+(?:\.\d+)?)s?\]", re.IGNORECASE)
+
+# A paragraph break is a blank line (possibly with stray whitespace on it).
+# Single newlines are NOT breaks — hard-wrapped text (Gutenberg-style)
+# would otherwise shatter into per-line paragraphs.
+PARAGRAPH_BREAK_RE = re.compile(r"\n\s*\n")
 
 
 def pause_seconds(text: str) -> float | None:
@@ -102,24 +111,44 @@ def _split_long_sentence(sentence: str, cap: int) -> list[str]:
     return pieces
 
 
+def chunk_text_flagged(text: str,
+                       cap: int = CHUNK_HARD_CAP) -> list[tuple[str, bool]]:
+    """Split chapter text into (chunk, paragraph_gap_after) pairs.
+
+    Paragraphs are chunked independently — a chunk never straddles a
+    paragraph break — and each paragraph's last chunk carries the flag,
+    except the chapter's final chunk (nothing follows it). Whether the
+    flag actually produces silence is assembly's call: it skips flags on
+    or before an explicit pause chunk, and the gap length (or 0 = off)
+    is settings.paragraph_gap_seconds.
+    """
+    flagged: list[tuple[str, bool]] = []
+    for para in PARAGRAPH_BREAK_RE.split(text):
+        # Normalize whitespace: TTS gets no meaning from layout, and
+        # uniform spacing makes the cap arithmetic exact. Tags unaffected.
+        normalized = " ".join(para.split())
+        if not normalized:
+            continue
+        chunks: list[str] = []
+        for segment in split_pause_segments(normalized):
+            if pause_seconds(segment) is not None:
+                chunks.append(segment)
+            else:
+                chunks.extend(_chunk_segment(segment, cap))
+        flagged.extend((c, False) for c in chunks[:-1])
+        flagged.append((chunks[-1], True))
+    if flagged:
+        flagged[-1] = (flagged[-1][0], False)
+    return flagged
+
+
 def chunk_text(text: str, cap: int = CHUNK_HARD_CAP) -> list[str]:
     """Split chapter text into TTS-ready chunks of at most `cap` chars.
 
     Pause markers each become a standalone chunk; the text between them
     is chunked sentence-wise as before.
     """
-    # Normalize whitespace: TTS gets no meaning from layout, and uniform
-    # spacing makes the cap arithmetic exact. Tags are unaffected.
-    normalized = " ".join(text.split())
-    if not normalized:
-        return []
-    chunks: list[str] = []
-    for segment in split_pause_segments(normalized):
-        if pause_seconds(segment) is not None:
-            chunks.append(segment)
-        else:
-            chunks.extend(_chunk_segment(segment, cap))
-    return chunks
+    return [c for c, _ in chunk_text_flagged(text, cap)]
 
 
 def _chunk_segment(normalized: str, cap: int) -> list[str]:
@@ -154,11 +183,13 @@ def persist_chunks(conn: sqlite3.Connection, chapter: sqlite3.Row) -> int:
     outright and fresh ones inserted stamped with the chapter's current
     version. Returns the number of chunks created. Caller commits.
     """
-    texts = chunk_text(chapter["raw_text"] or "")
+    flagged = chunk_text_flagged(chapter["raw_text"] or "")
     conn.execute("DELETE FROM chunks WHERE chapter_id = ?", (chapter["id"],))
     conn.executemany(
-        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text)
-           VALUES (?, ?, ?, ?)""",
-        [(chapter["id"], chapter["version"], i, t) for i, t in enumerate(texts)],
+        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text,
+                               paragraph_gap_after)
+           VALUES (?, ?, ?, ?, ?)""",
+        [(chapter["id"], chapter["version"], i, t, int(gap))
+         for i, (t, gap) in enumerate(flagged)],
     )
-    return len(texts)
+    return len(flagged)

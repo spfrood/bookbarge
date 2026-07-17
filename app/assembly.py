@@ -6,6 +6,12 @@ Plain concat, no crossfade — verified seamless by ear in Phase 1
 (runpod/RESULTS.md). AAC 96k (the final M4B's exact format) so the final
 assembly is a copy-concat remux, not a second lossy re-encode of the
 whole book — that re-encode cost ~40 minutes for a 7.4-hour book.
+
+Paragraph pacing (2026-07-17): chunks flagged paragraph_gap_after get a
+small silence appended at the turn — one shared anullsrc WAV, synthesized
+here per stitch, format-identical to chunk audio (pcm_f32le mono 24 kHz).
+Skipped when the flagged chunk or its follower is an explicit [pause:Ns]
+chunk (manual timing wins) and when settings.paragraph_gap_seconds is 0.
 """
 
 import asyncio
@@ -18,8 +24,29 @@ from fastapi.responses import RedirectResponse
 from mutagen.mp4 import MP4
 
 from . import auth, db, storage
+from .chunking import pause_seconds
+from .config import settings
 
 router = APIRouter()
+
+
+async def _make_gap_wav(seconds: float) -> Path | None:
+    """Synthesize the shared paragraph-gap silence (chunk-WAV format).
+    Returns None on failure — the stitch proceeds gapless rather than dying."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        path = Path(f.name)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+        "-t", f"{seconds:.3f}", "-c:a", "pcm_f32le", str(path),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        print(f"paragraph gap silence failed: "
+              f"{stderr.decode(errors='replace')[:300]}", flush=True)
+        path.unlink(missing_ok=True)
+        return None
+    return path
 
 
 async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bool:
@@ -31,7 +58,8 @@ async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bo
     conn = db.connect()
     try:
         rows = conn.execute(
-            """SELECT chunk_index, audio_file_path FROM chunks
+            """SELECT chunk_index, audio_file_path, text, paragraph_gap_after
+               FROM chunks
                WHERE chapter_id = ? AND status = 'done' ORDER BY chunk_index""",
             (chapter_id,)).fetchall()
     finally:
@@ -44,9 +72,26 @@ async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bo
               flush=True)
         return False
 
+    # Automatic paragraph gaps: silence after each flagged chunk, unless an
+    # explicit pause chunk sits on either side of the boundary.
+    gap_after: set[int] = set()
+    if settings.paragraph_gap_seconds > 0:
+        gap_after = {i for i, r in enumerate(rows[:-1])
+                     if r["paragraph_gap_after"]
+                     and pause_seconds(r["text"]) is None
+                     and pause_seconds(rows[i + 1]["text"]) is None}
+    gap_path = None
+    if gap_after:
+        gap_path = await _make_gap_wav(settings.paragraph_gap_seconds)
+        if gap_path is None:
+            gap_after = set()
+
     out_path = storage.chapter_dir(user_id, project_id, chapter_id) / "assembled.m4a"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        f.write("".join(f"file '{p}'\n" for p in paths))
+        for i, p in enumerate(paths):
+            f.write(f"file '{p}'\n")
+            if i in gap_after:
+                f.write(f"file '{gap_path}'\n")
         list_path = f.name
     try:
         # faststart so the browser player can scrub via Range requests.
@@ -64,6 +109,8 @@ async def assemble_chapter(user_id: int, project_id: int, chapter_id: int) -> bo
             return False
     finally:
         Path(list_path).unlink(missing_ok=True)
+        if gap_path is not None:
+            gap_path.unlink(missing_ok=True)
 
     conn = db.connect()
     try:

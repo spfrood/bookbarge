@@ -1,0 +1,27 @@
+{# Chatterbox Turbo's documented paralinguistic tags (PROJECT_BIBLE.md §7,
+   measured in Phase 1). Shown on the chapter editor and the chunks page —
+   keep this partial the single copy of the list. #}
+<details class="tag-help">
+  <summary>Voice tags Chatterbox understands ([sigh], [laugh], &hellip;)</summary>
+  <p class="muted">Put a tag exactly where the sound should happen — it's
+  performed as a real vocal reaction in the narrator's voice, not read
+  aloud. Example: <code>He looked at the bill. [sigh] "Fine."</code></p>
+  <table class="listing tag-table">
+    <tr><th>Tag</th><th>What it does</th></tr>
+    <tr><td><code>[laugh]</code></td><td>a full laugh</td></tr>
+    <tr><td><code>[chuckle]</code></td><td>a short, soft laugh</td></tr>
+    <tr><td><code>[sigh]</code></td><td>an audible sigh</td></tr>
+    <tr><td><code>[gasp]</code></td><td>a sharp intake of breath</td></tr>
+    <tr><td><code>[groan]</code></td><td>a groan</td></tr>
+    <tr><td><code>[cough]</code></td><td>a cough</td></tr>
+    <tr><td><code>[clear throat]</code></td><td>clears the throat</td></tr>
+    <tr><td><code>[sniff]</code></td><td>a sniff</td></tr>
+    <tr><td><code>[shush]</code></td><td>a hushing &ldquo;shhh&rdquo;</td></tr>
+  </table>
+  <p class="muted">These nine are the documented set — any <em>other</em>
+  bracketed text is read aloud as words, with two exceptions Bookbarge
+  handles itself: <code>[pause:2.4s]</code> becomes exact silence, and
+  misspelled pause markers are rejected at save time. Tags count toward
+  the chunk character limit, and delivery is stochastic &mdash; if a tag
+  gets skipped or overdone, save the chunk unchanged to re-roll it.</p>
+</details>

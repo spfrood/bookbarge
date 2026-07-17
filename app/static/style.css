@@ -99,6 +99,10 @@ button.small.approved { background: #2e7d32; }
 .checklist { border-left: 3px solid var(--muted); padding-left: 0.75rem; }
 details.meta-edit { margin: 1rem 0; }
 details.meta-edit summary { cursor: pointer; color: var(--accent); }
+details.tag-help { margin: 1rem 0; }
+details.tag-help summary { cursor: pointer; color: var(--accent); }
+.tag-table { margin: 0.5rem 0; }
+.tag-table td, .tag-table th { padding: 0.15rem 0.75rem 0.15rem 0; }
 .checklist.all-approved { border-color: #2e7d32; }
 textarea {
   width: 100%;
@@ -128,6 +132,40 @@ td.listen a.download { font-size: 0.85rem; }
   border-radius: 4px;
   padding: 0 0.35rem;
   vertical-align: middle;
+}
+.needs-regen {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #8a6d1a;
+  background: #fdf3d7;
+  border: 1px solid #d9b545;
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.chunk-error {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #c0392b;
+  background: #fbe9e7;
+  border: 1px solid #c0392b;
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  vertical-align: middle;
+}
+.epub-skip { opacity: 0.55; }
+.epub-title { width: 100%; min-width: 14rem; }
+.epub-preview-text { font-size: 0.85rem; max-width: 28rem; }
+.para-tag {
+  font-size: 0.8rem;
+  color: #8a8371;
+  border: 1px solid #b9b2a4;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  vertical-align: middle;
+  cursor: help;
 }
 button:disabled { background: #b9b2a4; cursor: not-allowed; }
 .error {

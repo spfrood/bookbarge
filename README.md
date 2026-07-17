@@ -8,7 +8,7 @@ Self-hosted audiobook production pipeline. Upload a book as plain-text chapters 
 
 ## What it does
 
-1. Upload a book's chapters as `.txt` files and a short voice reference clip
+1. Upload a book's chapters as `.txt` files — or import a DRM-free EPUB directly (chapters and titles are auto-detected; you pick which sections to keep) — plus a short voice reference clip
 2. Generate — text is chunked and sent to a RunPod Serverless GPU endpoint running Chatterbox Turbo TTS for voice cloning
 3. Review each chapter by streaming it in-browser or downloading it to listen in any media player
 4. Mark each chapter Approved, or edit the text / upload a replacement and let it recast
@@ -97,11 +97,19 @@ Distribution note: ACX/Audible currently disfavor externally-produced AI narrati
 
 ---
 
+## EPUB import
+
+Instead of splitting a book into `.txt` files yourself, upload a DRM-free `.epub` on the project page. Bookbarge reads the book's structure (spine + table of contents, including books that pack many chapters into one internal file), shows you every detected section with its title and word count, and pre-unticks what looks like front/back matter — you confirm what to import and can rename chapters before anything is created. Headings can be narrated or stripped. Kindle formats and PDF aren't supported directly; convert them to EPUB first (Calibre does this in one click).
+
+---
+
 ## Text preparation
 
 Bookbarge does not automatically enrich or tag your chapter text. Chatterbox Turbo supports inline paralinguistic tags that render as real vocalized reactions — the documented set is `[clear throat]`, `[sigh]`, `[shush]`, `[cough]`, `[groan]`, `[sniff]`, `[gasp]`, `[chuckle]`, `[laugh]` — if you want that, add tags to your `.txt` files yourself before upload, using whatever tool you like. This is intentional: an automated LLM enrichment pass would mean a recurring external API cost per book on top of RunPod compute, which this project avoids by design. The chunker preserves any tags you include exactly as written.
 
 **Pauses** are the one tag Bookbarge handles itself: write `[pause:2.4s]` anywhere in your text (0.1–15 seconds) to insert exactly that much silence — useful at scene breaks and section transitions, where TTS tends to rush ahead. Pauses are synthesized locally, cost nothing to generate or adjust, and can also be added, retimed, or removed later from the per-chapter chunk editor.
+
+**Paragraph pacing** is automatic: paragraph breaks (blank lines — single newlines are treated as hard-wrapping, not breaks) get a small silence when the chapter audio is stitched, so narration breathes at paragraph turns without hand-tagging every one. The gap defaults to 0.7 s and is set by `BOOKBARGE_PARAGRAPH_GAP_SECONDS` in `.env` (`0` disables it; changing it only needs a re-stitch, not regeneration). An explicit `[pause:Ns]` at a paragraph turn replaces the automatic gap there.
 
 ---
 

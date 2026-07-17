@@ -59,3 +59,8 @@ def create_chapter_tree(user_id: int, project_id: int, chapter_id: int) -> None:
 
 def delete_project_tree(user_id: int, project_id: int) -> None:
     shutil.rmtree(project_dir(user_id, project_id), ignore_errors=True)
+
+
+def delete_chapter_tree(user_id: int, project_id: int, chapter_id: int) -> None:
+    shutil.rmtree(chapter_dir(user_id, project_id, chapter_id),
+                  ignore_errors=True)

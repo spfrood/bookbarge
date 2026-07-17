@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Import EPUB — Bookbarge{% endblock %}
+{% block content %}
+<section>
+  <p><a href="/projects/{{ project_id }}">&larr; Back to project</a></p>
+  <h2>Import from {{ filename }}</h2>
+  <p class="muted">Bookbarge found <strong>{{ candidates|length }}</strong>
+  sections in the book's reading order. Untick anything that shouldn't be
+  narrated &mdash; sections that look like front or back matter (cover,
+  contents, copyright, very short pages) start unticked. Titles are
+  editable; they become the chapter markers in the final audiobook.</p>
+
+  <form method="post" action="/projects/{{ project_id }}/import-epub/confirm">
+    <p><label><input type="checkbox" name="headings" checked>
+      Narrate headings (chapter titles and subheads inside the text are
+      read aloud; untick if the narrator shouldn't announce them)</label></p>
+    <table class="listing epub-preview">
+      <tr><th>Import</th><th>Title</th><th>Words</th><th>Starts with</th></tr>
+      {% for c in candidates %}
+      <tr class="{{ 'epub-skip' if c.skip else '' }}">
+        <td><input type="checkbox" name="include" value="{{ c.index }}"
+                   {{ '' if c.skip else 'checked' }}></td>
+        <td><input type="text" name="title-{{ c.index }}" value="{{ c.title }}"
+                   class="epub-title"></td>
+        <td>{{ c.words }}</td>
+        <td class="muted epub-preview-text">{{ c.preview }}{% if c.preview|length >= 160 %}&hellip;{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <button type="submit">Import selected chapters</button>
+  </form>
+  <form method="post" action="/projects/{{ project_id }}/import-epub/cancel"
+        class="inline-form">
+    <button type="submit" class="danger">Cancel import</button>
+  </form>
+</section>
+{% endblock %}

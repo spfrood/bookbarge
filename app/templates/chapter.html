@@ -24,6 +24,25 @@
   <p class="error">This chapter is regenerating right now — editing is
   locked until it finishes.</p>
   {% else %}
+  {% set locked = not has_voice or sibling_busy %}
+  {% if sibling_busy %}
+  <p class="error">Another chapter in this project is generating right now
+  — regeneration runs one chapter at a time, so recasting is locked. This
+  page will unlock automatically when it finishes.</p>
+  <script>
+    (function () {
+      const timer = setInterval(async () => {
+        try {
+          const r = await fetch("/projects/{{ project['id'] }}/status.json");
+          if (!r.ok) return;
+          const busy = (await r.json()).chapters.some(
+            (c) => c.status === "generating" || c.status === "recasting");
+          if (!busy) { clearInterval(timer); location.reload(); }
+        } catch {}
+      }, 2000);
+    })();
+  </script>
+  {% endif %}
   <h3>Edit individual chunks</h3>
   <p class="muted">Fix a word or re-roll one flubbed line without
   regenerating the whole chapter — only the edited chunk is re-sent
@@ -37,12 +56,15 @@
   resets, the current audio is discarded, and the whole chapter
   regenerates from the new text (version {{ chapter['version'] + 1 }}).
   Tip: write <code>[pause:2.4s]</code> anywhere in the text to insert
-  that much silence (generated locally, free).</p>
+  that much silence (generated locally, free). Paragraph breaks (blank
+  lines) get a small automatic gap at stitch, so only tag the spots that
+  need specific timing.</p>
+  {% include "partials/tag_help.html" %}
   <form method="post"
         action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/text"
         onsubmit="return confirm('Save and regenerate this chapter? Current audio and approval will be replaced.')">
-    <textarea name="raw_text" rows="20" {{ '' if has_voice else 'disabled' }}>{{ chapter['raw_text'] }}</textarea>
-    <button type="submit" {{ '' if has_voice else 'disabled' }}>Save &amp; regenerate</button>
+    <textarea name="raw_text" rows="20" {{ 'disabled' if locked else '' }}>{{ chapter['raw_text'] }}</textarea>
+    <button type="submit" {{ 'disabled' if locked else '' }}>Save &amp; regenerate</button>
   </form>
 
   <h3>Or replace with a new .txt file</h3>
@@ -50,12 +72,22 @@
         action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/replace"
         onsubmit="return confirm('Replace the text and regenerate this chapter? Current audio and approval will be replaced.')">
     <input type="file" name="replacement" accept=".txt" required
-           {{ '' if has_voice else 'disabled' }}>
-    <button type="submit" {{ '' if has_voice else 'disabled' }}>Upload &amp; regenerate</button>
+           {{ 'disabled' if locked else '' }}>
+    <button type="submit" {{ 'disabled' if locked else '' }}>Upload &amp; regenerate</button>
   </form>
   {% if not has_voice %}
   <p class="error">Upload a voice reference on the project page before recasting.</p>
   {% endif %}
   {% endif %}
+
+  <h3>Danger zone</h3>
+  {% set busy = chapter['processing_status'] in ('generating', 'recasting') or sibling_busy %}
+  <form method="post"
+        action="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}/delete"
+        onsubmit="return confirm('Delete chapter {{ chapter['chapter_number'] }} ({{ chapter['title'] or chapter['filename'] }}) and all of its audio? This cannot be undone.')">
+    <button type="submit" class="danger" {{ 'disabled' if busy else '' }}
+            title="{{ 'Locked while generation is running' if busy else '' }}">
+      Delete this chapter</button>
+  </form>
 </section>
 {% endblock %}

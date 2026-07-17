@@ -23,12 +23,23 @@ from starlette.datastructures import UploadFile
 from . import auth, db, generation, storage
 from .chunking import (CHUNK_HARD_CAP, PAUSE_MAX_SECONDS, PAUSE_MIN_SECONDS,
                        pause_seconds, split_pause_segments)
+from .config import settings
 from .projects import MAX_CHAPTER_BYTES, get_owned_project
 
 router = APIRouter()
 templates: Jinja2Templates = None  # set by main.py
 
 BUSY = ("generating", "recasting")
+
+
+def _sibling_busy(conn: sqlite3.Connection, project_id: int,
+                  chapter_id: int) -> bool:
+    """True when ANOTHER chapter in the project is generating — the
+    one-at-a-time rule then locks this chapter's edit/recast forms."""
+    return conn.execute(
+        """SELECT 1 FROM chapters WHERE project_id = ? AND id != ?
+           AND processing_status IN ('generating', 'recasting')""",
+        (project_id, chapter_id)).fetchone() is not None
 
 # Anything [pause…]-shaped that split_pause_segments did NOT extract is a
 # typo ([pause 2s], [pause:2,4s]…) — reject it rather than let Chatterbox
@@ -91,6 +102,45 @@ async def edit_chapter_title(request: Request, project_id: int, chapter_id: int,
                             status_code=303)
 
 
+@router.post("/projects/{project_id}/chapters/{chapter_id}/delete")
+async def delete_chapter(request: Request, project_id: int, chapter_id: int,
+                         user=Depends(auth.require_user)):
+    """Remove a chapter outright: row (chunks cascade), audio, source.txt.
+
+    Refused while anything in the project is generating or the final
+    audiobook is assembling — deletion mid-flight would yank files a
+    worker is using. Remaining chapters renumber to stay contiguous;
+    an existing M4B is untouched (re-assemble to drop the chapter)."""
+    conn = db.connect()
+    try:
+        _get_chapter(conn, user, project_id, chapter_id)
+        generation._require_idle(conn, project_id)
+        assembling = conn.execute(
+            """SELECT 1 FROM generation_jobs WHERE project_id = ?
+               AND chapter_id IS NULL AND status = 'running'""",
+            (project_id,)).fetchone()
+        if assembling:
+            raise HTTPException(status_code=409,
+                                detail="Final audiobook is assembling — "
+                                       "wait for it to finish.")
+        number = conn.execute(
+            "SELECT chapter_number FROM chapters WHERE id = ?",
+            (chapter_id,)).fetchone()[0]
+        conn.execute("DELETE FROM chapters WHERE id = ?", (chapter_id,))
+        conn.execute(
+            """UPDATE chapters SET chapter_number = chapter_number - 1
+               WHERE project_id = ? AND chapter_number > ?""",
+            (project_id, number))
+        conn.execute(
+            "UPDATE projects SET updated_at = datetime('now') WHERE id = ?",
+            (project_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    storage.delete_chapter_tree(user["id"], project_id, chapter_id)
+    return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+
 # --- chapter detail: inline editor + replace upload ----------------------------
 
 @router.get("/projects/{project_id}/chapters/{chapter_id}")
@@ -104,10 +154,12 @@ async def chapter_page(request: Request, project_id: int, chapter_id: int,
         voice = conn.execute(
             "SELECT id FROM voice_references WHERE project_id = ?",
             (project_id,)).fetchone()
+        sibling_busy = _sibling_busy(conn, project_id, chapter_id)
     finally:
         conn.close()
     return templates.TemplateResponse(request, "chapter.html", {
         "user": user, "project": project, "chapter": chapter,
+        "sibling_busy": sibling_busy,
         "has_voice": voice is not None, "error": error})
 
 
@@ -159,6 +211,11 @@ def _recast(request: Request, user: sqlite3.Row, project_id: int,
             raise HTTPException(status_code=409,
                                 detail="Already regenerating — wait for it "
                                        "to finish.")
+        # Project-wide one-at-a-time guard must run BEFORE the destructive
+        # work below: launch_generation re-checks it, but by then this
+        # chapter's audio files are already deleted while the DB update
+        # rolls back — an unrecoverable DB/filesystem mismatch.
+        generation._require_idle(conn, project_id)
         voice = conn.execute(
             "SELECT id FROM voice_references WHERE project_id = ?",
             (project_id,)).fetchone()
@@ -192,11 +249,14 @@ def _recast(request: Request, user: sqlite3.Row, project_id: int,
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
 
-# --- chunk-level editing (2026-07-12) -------------------------------------------
-# Fix one flubbed line without re-paying to regenerate the whole chapter:
-# only the edited chunk goes back to RunPod, then the chapter re-assembles.
-# Saving an unchanged chunk is allowed on purpose — generation is
-# stochastic, so it works as a "re-roll this take" button.
+# --- chunk-level editing (2026-07-12; staged saves 2026-07-17) -------------------
+# Fix one flubbed line without re-paying to regenerate the whole chapter.
+# Saving a chunk is instant and STAGED: the text is stored and the chunk
+# marked pending ("needs regeneration"); nothing hits RunPod until the
+# user triggers the batch regenerate/re-stitch. (Immediate regeneration
+# locked the page and its reload discarded unsaved edits in other
+# chunks' textareas.) Saving an unchanged chunk is allowed on purpose —
+# generation is stochastic, so it works as a "re-roll this take" marker.
 
 def _chunk_rows(conn: sqlite3.Connection, chapter_id: int) -> list[sqlite3.Row]:
     return conn.execute(
@@ -217,6 +277,8 @@ def _render_chunks(request, conn, user, project_id, chapter, error=None):
         "user": user, "project": project, "chapter": chapter,
         "chunks": chunks, "cap": CHUNK_HARD_CAP,
         "pause_min": PAUSE_MIN_SECONDS, "pause_max": PAUSE_MAX_SECONDS,
+        "paragraph_gap": settings.paragraph_gap_seconds,
+        "sibling_busy": _sibling_busy(conn, project_id, chapter["id"]),
         "has_voice": voice is not None, "error": error})
 
 
@@ -349,6 +411,13 @@ def _delete_pause_chunk(conn: sqlite3.Connection, user_id: int,
     state and the page offers a re-stitch."""
     _sync_raw_text(conn, user_id, project_id, chapter, chunk, "")
     conn.execute("DELETE FROM chunks WHERE id = ?", (chunk["id"],))
+    if chunk["paragraph_gap_after"]:
+        # The paragraph turn outlives the pause that sat on it — hand the
+        # flag back to the previous chunk so the automatic gap resumes.
+        conn.execute(
+            """UPDATE chunks SET paragraph_gap_after = 1
+               WHERE chapter_id = ? AND chunk_index = ?""",
+            (chapter["id"], chunk["chunk_index"] - 1))
     conn.execute(
         """UPDATE chunks SET chunk_index = chunk_index - 1
            WHERE chapter_id = ? AND chunk_index > ?""",
@@ -438,8 +507,8 @@ async def edit_chunk(request: Request, project_id: int, chapter_id: int,
         (chapter_dir / "assembled.m4a").unlink(missing_ok=True)
         (chapter_dir / "assembled.mp3").unlink(missing_ok=True)
 
-        generation.launch_chunk_regen(conn, user["id"], project_id, chapter,
-                                      chunk, segments)
+        generation.stage_chunk_edit(conn, user["id"], project_id, chapter,
+                                    chunk, segments)
     finally:
         conn.close()
     return RedirectResponse(

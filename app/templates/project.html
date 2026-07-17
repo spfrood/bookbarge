@@ -159,6 +159,17 @@
     <button type="submit">Upload chapters</button>
   </form>
 
+  <h4>Or import an EPUB</h4>
+  <p class="muted">Import a DRM-free .epub directly &mdash; chapters and
+  their titles are detected from the book's structure, and you choose
+  which sections to keep on the next screen before anything is created.
+  (Kindle books: convert to EPUB with Calibre first.)</p>
+  <form method="post" action="/projects/{{ project['id'] }}/import-epub"
+        enctype="multipart/form-data" class="inline-form">
+    <input type="file" name="epub" accept=".epub" required>
+    <button type="submit">Import EPUB</button>
+  </form>
+
   {% if chapters %}
   <h3>Final audiobook</h3>
   {% set all_approved = (chapters | selectattr('approved') | list | length) == chapters | length %}

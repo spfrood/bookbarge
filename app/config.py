@@ -41,6 +41,12 @@ class Settings:
     # time is enforced separately; this is chunk-level parallelism).
     runpod_concurrency = int(os.environ.get("RUNPOD_CONCURRENCY", "3"))
 
+    # Silence inserted at stitch time after chunks that end a paragraph
+    # (blank-line-separated in the source text). 0 disables. Explicit
+    # [pause:Ns] markers at a boundary suppress the automatic gap there.
+    paragraph_gap_seconds = float(
+        os.environ.get("BOOKBARGE_PARAGRAPH_GAP_SECONDS", "0.7"))
+
     @property
     def db_path(self) -> Path:
         return self.data_root / "data" / "app.db"

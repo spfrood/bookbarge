@@ -18,6 +18,7 @@ replaced version hit rowcount 0 and their audio is discarded.
 import asyncio
 import base64
 import sqlite3
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -110,15 +111,20 @@ def launch_generation(conn, user_id: int, project_id: int,
     _spawn(run_chapter(user_id, project_id, chapter["id"]))
 
 
-def launch_chunk_regen(conn, user_id: int, project_id: int,
-                       chapter: sqlite3.Row, chunk: sqlite3.Row,
-                       new_texts: list[str]) -> None:
-    """Chunk-level recast: regenerate one edited chunk, keep the rest.
+def stage_chunk_edit(conn, user_id: int, project_id: int,
+                     chapter: sqlite3.Row, chunk: sqlite3.Row,
+                     new_texts: list[str]) -> None:
+    """Chunk-level edit, staged: save the text, regenerate NOTHING yet.
 
-    Unlike launch_generation this does NOT re-chunk or bump the chapter
-    version — every other chunk's row and audio stay valid. Only the
-    edited chunk drops back to pending; the standard worker regenerates
-    whatever isn't done (repairing any errored chunks along the way).
+    (2026-07-17, replacing save-and-regenerate-immediately: that flow
+    locked the page for the regeneration and its reload discarded any
+    unsaved typing in the OTHER chunks' textareas. Staged saves are
+    instant, so editing many chunks in a row loses nothing.)
+
+    The edited chunk drops to pending — shown as "needs regeneration" —
+    and the /stitch route later regenerates every non-done chunk in one
+    worker pass, then re-assembles. Nothing here re-chunks or bumps the
+    chapter version: every other chunk's row and audio stay valid.
     Caller has already validated the texts against CHUNK_HARD_CAP and
     synced raw_text/source.txt.
 
@@ -130,6 +136,9 @@ def launch_chunk_regen(conn, user_id: int, project_id: int,
     """
     _require_idle(conn, project_id)
     n = len(new_texts)
+    # The paragraph turn sits after the whole edited region, so on a split
+    # the flag rides to the LAST piece, not the row that keeps the first.
+    gap_after = chunk["paragraph_gap_after"]
     if n > 1:
         conn.execute(
             """UPDATE chunks SET chunk_index = chunk_index + ?
@@ -138,36 +147,38 @@ def launch_chunk_regen(conn, user_id: int, project_id: int,
     conn.execute(
         """UPDATE chunks SET text = ?, status = 'pending',
                runpod_job_id = NULL, audio_file_path = NULL,
+               paragraph_gap_after = ?,
                updated_at = datetime('now') WHERE id = ?""",
-        (new_texts[0], chunk["id"]))
+        (new_texts[0], gap_after if n == 1 else 0, chunk["id"]))
     conn.executemany(
-        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text)
-           VALUES (?, ?, ?, ?)""",
-        [(chapter["id"], chunk["chapter_version"], chunk["chunk_index"] + i, t)
+        """INSERT INTO chunks (chapter_id, chapter_version, chunk_index, text,
+                               paragraph_gap_after)
+           VALUES (?, ?, ?, ?, ?)""",
+        [(chapter["id"], chunk["chapter_version"], chunk["chunk_index"] + i, t,
+          gap_after if i == n - 1 else 0)
          for i, t in enumerate(new_texts[1:], start=1)])
-    # Same semantics as a full recast: the audio backing any approval is
-    # being replaced, and the assembled file is stale until re-assembly.
+    # Same semantics as a pause delete: approval and the assembled audio
+    # are stale the moment the text changes; the chapter sits in the
+    # unstitched ready_for_review state until the batch regeneration.
     conn.execute(
-        """UPDATE chapters SET processing_status = 'recasting',
+        """UPDATE chapters SET processing_status = 'ready_for_review',
                approved = 0, approved_at = NULL,
                assembled_audio_path = NULL, assembled_at = NULL
            WHERE id = ?""", (chapter["id"],))
-    conn.execute(
-        """INSERT INTO generation_jobs (project_id, chapter_id, total_chunks)
-           VALUES (?, ?, ?)""", (project_id, chapter["id"], n))
-    conn.execute("UPDATE projects SET status = 'generating', "
-                 "updated_at = datetime('now') WHERE id = ?", (project_id,))
     conn.commit()
-    # No re-stitch here: the user re-stitches once after their last edit.
-    _spawn(run_chapter(user_id, project_id, chapter["id"], assemble=False))
+    # The superseded take must not stay playable (or land in a stitch).
+    if chunk["audio_file_path"]:
+        Path(chunk["audio_file_path"]).unlink(missing_ok=True)
 
 
 @router.post("/projects/{project_id}/chapters/{chapter_id}/stitch")
 async def stitch_chapter(request: Request, project_id: int, chapter_id: int,
                          user=Depends(auth.require_user)):
-    """Explicit chapter re-stitch after chunk edits (2026-07-13). Runs the
-    standard worker: any non-done chunks are (re)generated first, then the
-    chapter assembles. No-GPU-cost when everything is already done."""
+    """Regenerate staged chunk edits and re-stitch (2026-07-13; staged
+    saves 2026-07-17). Runs the standard worker: every non-done chunk —
+    edited text, retimed pauses, errored chunks — is (re)generated in one
+    pass, then the chapter assembles. No-GPU-cost when everything is
+    already done (a pure re-stitch)."""
     conn = db.connect()
     try:
         get_owned_project(conn, user, project_id)
