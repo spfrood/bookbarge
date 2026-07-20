@@ -13,10 +13,15 @@ RUN apt-get update \
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
 
-# Default HF cache location; the endpoint template points this at the
-# attached Network Volume (/runpod-volume) so weights persist across
-# cold starts. Value here is only the fallback for volume-less runs.
-ENV HF_HOME=/runpod-volume/hf
+# Bake the Turbo weights INTO the image (HF cache at /opt/hf) instead of
+# onto a network volume. A network volume is region-locked, which pinned
+# the whole endpoint to a single datacenter and starved it of GPUs (only
+# ~3 workers ever scaled up); with the weights in the image the endpoint
+# can run in ANY datacenter. Chatterbox Turbo is small (~350M params), so
+# the image grows only modestly. The weights are downloaded on CPU at
+# build time — no GPU is needed to populate the cache.
+ENV HF_HOME=/opt/hf
+RUN python -c "import torch; from chatterbox.tts_turbo import ChatterboxTurboTTS; ChatterboxTurboTTS.from_pretrained(device='cpu')"
 
 COPY handler.py /handler.py
 
