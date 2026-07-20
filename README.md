@@ -11,7 +11,7 @@ Self-hosted audiobook production pipeline. Upload a book as plain-text chapters 
 1. Upload a book's chapters as `.txt` files — or import a DRM-free EPUB directly (chapters and titles are auto-detected; you pick which sections to keep) — plus a short voice reference clip
 2. Generate — text is chunked and sent to a RunPod Serverless GPU endpoint running Chatterbox Turbo TTS for voice cloning
 3. Review each chapter by streaming it in-browser or downloading it to listen in any media player
-4. Mark each chapter Approved, or edit the text / upload a replacement and let it recast
+4. Mark each chapter Approved, or edit the text / upload a replacement and let it recast — approving a chapter also frees its per-chunk working audio (the bulk of a project's disk use), keeping the assembled chapter audio and the text; regenerate the chapter to edit it again
 5. Once every chapter is approved, assemble the final audiobook as an M4B with embedded chapter markers
 6. Download the finished audiobook and clean up intermediate files when done
 

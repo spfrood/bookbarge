@@ -1,5 +1,6 @@
 # Private / local — never commit
 PRIVATE.md
+ADMIN.md
 .env
 .env.*
 !.env.example

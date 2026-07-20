@@ -33,9 +33,21 @@
   </script>
 
   {% elif not chunks %}
+  {% if chapter['assembled_audio_path'] %}
+  <p class="muted">The per-chunk working audio for this chapter was cleaned
+  up to save space when it was approved — the assembled chapter audio (and
+  the final audiobook) still has everything and plays normally. Per-chunk
+  editing and re-stitching need those working files, so they're unavailable
+  now. To change this chapter, regenerate it from the
+  <a href="/projects/{{ project['id'] }}/chapters/{{ chapter['id'] }}">chapter
+  page</a> (Edit text / Replace file), or use <strong>Regenerate all</strong>
+  on the project page — that rebuilds the chunks and, like any recast,
+  resets approval.</p>
+  {% else %}
   <p class="muted">No chunks exist for this chapter — either it hasn't been
   generated yet, or its chunk data was removed by cleanup. Chunk-level
   editing is only available while the generated chunks are still around.</p>
+  {% endif %}
 
   {% else %}
   {% set locked = not has_voice or sibling_busy %}

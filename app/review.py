@@ -78,7 +78,28 @@ async def toggle_approved(request: Request, project_id: int, chapter_id: int,
             """UPDATE chapters SET approved = ?,
                    approved_at = CASE WHEN ? THEN datetime('now') ELSE NULL END
                WHERE id = ?""", (now_approved, now_approved, chapter_id))
+        if now_approved:
+            # Reclaim the per-chunk working audio. Approval means the
+            # chapter's assembled.m4a is the deliverable — and the final
+            # M4B is built from those .m4a files, not the chunk WAVs — so
+            # the chunks (uncompressed float32, by far the bulk of a
+            # project's disk footprint) are now dead weight. Drop their
+            # rows and files here; source.txt/raw_text stay, so unapproving
+            # and regenerating (Edit text / Replace file / Regenerate all)
+            # rebuilds the chunks from scratch. assembled.m4a is untouched
+            # and stays fully playable. Reclaim only runs while assembled
+            # audio exists (guarded above) and never while busy, so no
+            # in-flight chunk work can be lost. Per-chunk editing and
+            # re-stitch need the WAVs and so are unavailable until a
+            # regenerate — the chunks page explains that state.
+            conn.execute("DELETE FROM chunks WHERE chapter_id = ?",
+                         (chapter_id,))
         conn.commit()
+        if now_approved:
+            cdir = storage.chunks_dir(user["id"], project_id, chapter_id)
+            if cdir.is_dir():
+                for wav in cdir.glob("*.wav"):
+                    wav.unlink(missing_ok=True)
     finally:
         conn.close()
     return RedirectResponse(f"/projects/{project_id}", status_code=303)
