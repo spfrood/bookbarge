@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
-"""Create the Bookbarge RunPod resources: network volume, template, endpoint.
+"""Create the Bookbarge RunPod resources: template + endpoint.
+
+The Turbo weights are baked into the Docker image (HF cache at /opt/hf), so
+the endpoint needs no network volume and is free to run in any datacenter —
+a network volume is region-locked and previously pinned the endpoint to one
+datacenter, starving it of GPUs. The legacy `volume` command is kept for
+reference but is no longer part of the deploy flow.
 
 Stdlib-only; reads RUNPOD_API_KEY from ../.env (never prints it).
 
 Usage:
-  python3 deploy.py volume                 # create HF-cache network volume
-  python3 deploy.py template IMAGE         # create serverless template
-  python3 deploy.py endpoint VOLUME_ID TEMPLATE_ID
-  python3 deploy.py list                   # show existing resources
+  python3 deploy.py template IMAGE                    # create serverless template
+  python3 deploy.py endpoint TEMPLATE_ID [MAX_WORKERS]  # create endpoint (no volume, multi-DC)
+  python3 deploy.py list                              # show existing resources
+  python3 deploy.py delete-endpoint ID               # tear down an old endpoint
+  python3 deploy.py delete-volume ID                 # tear down an old network volume
+  python3 deploy.py volume                            # (legacy) create HF-cache volume
 """
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,6 +31,13 @@ VOLUME_NAME = "bookbarge-hf-cache"
 VOLUME_SIZE_GB = 10
 # Volume + endpoint must share a datacenter; tried in order until one works.
 DATACENTER_CANDIDATES = ["US-KS-2", "US-TX-3", "US-GA-1", "US-IL-1", "EU-RO-1"]
+
+# Now that the weights are baked into the image, the endpoint is not tied to
+# a volume, so it can span every US datacenter — RunPod places workers
+# wherever a suitable GPU is free, which is what lets workersMax actually
+# fill. (US-only to keep audio data stateside.)
+US_DATACENTERS = ["US-KS-2", "US-TX-3", "US-GA-1", "US-IL-1", "US-NC-1", "US-CA-2"]
+DEFAULT_MAX_WORKERS = 5
 
 TEMPLATE_NAME = "bookbarge-chatterbox"
 ENDPOINT_NAME = "bookbarge-chatterbox"
@@ -80,29 +96,37 @@ def create_volume() -> None:
 
 
 def create_template(image: str) -> None:
+    # No HF_HOME env override: the image bakes HF_HOME=/opt/hf itself, and a
+    # template env would win at runtime and send it back to a (now absent)
+    # volume path. containerDiskInGb is the writable overlay, not the image.
+    # RunPod requires globally-unique template names, so a redeploy can't
+    # reuse the bare name — suffix it so old + new templates coexist.
+    name = f"{TEMPLATE_NAME}-{time.strftime('%m%d%H%M')}"
     t = call("POST", "/templates", {
-        "name": TEMPLATE_NAME,
+        "name": name,
         "imageName": image,
         "isServerless": True,
         "category": "NVIDIA",
         "containerDiskInGb": 20,
-        "env": {"HF_HOME": "/runpod-volume/hf"},
     })
-    print(f"created template {t['id']} for image {image}")
+    print(f"created template {t['id']} ({name}) for image {image}")
 
 
-def create_endpoint(volume_id: str, template_id: str) -> None:
-    volume = call("GET", f"/networkvolumes/{volume_id}")
+def create_endpoint(template_id: str,
+                    max_workers: int = DEFAULT_MAX_WORKERS) -> None:
+    # No networkVolumeId and a multi-datacenter spread: weights ride in the
+    # image, so RunPod can start workers in any of these datacenters — which
+    # is what lets max workers actually fill instead of queuing behind the
+    # 2-3 GPUs free in one region.
     ep = call("POST", "/endpoints", {
-        "name": ENDPOINT_NAME,
+        "name": f"{ENDPOINT_NAME}-{time.strftime('%m%d%H%M')}",
         "templateId": template_id,
         "computeType": "GPU",
         "gpuTypeIds": GPU_TYPE_IDS,
         "gpuCount": 1,
-        "dataCenterIds": [volume["dataCenterId"]],
-        "networkVolumeId": volume_id,
+        "dataCenterIds": US_DATACENTERS,
         "workersMin": 0,
-        "workersMax": 2,
+        "workersMax": max_workers,
         "idleTimeout": 10,
         "executionTimeoutMs": 600_000,
         "flashboot": True,
@@ -110,8 +134,24 @@ def create_endpoint(volume_id: str, template_id: str) -> None:
         "scalerValue": 4,
         "minCudaVersion": "12.4",
     })
-    print(f"created endpoint {ep['id']} in {volume['dataCenterId']}")
-    print(f"→ set RUNPOD_ENDPOINT_ID={ep['id']} in .env")
+    print(f"created endpoint {ep['id']} "
+          f"(max {max_workers} workers, datacenters: {', '.join(US_DATACENTERS)})")
+    print(f"→ set RUNPOD_ENDPOINT_ID={ep['id']} in .env, then restart bookbarge")
+
+
+def set_workers(endpoint_id: str, max_workers: int) -> None:
+    call("PATCH", f"/endpoints/{endpoint_id}", {"workersMax": max_workers})
+    print(f"endpoint {endpoint_id} max workers -> {max_workers}")
+
+
+def delete_endpoint(endpoint_id: str) -> None:
+    call("DELETE", f"/endpoints/{endpoint_id}")
+    print(f"deleted endpoint {endpoint_id}")
+
+
+def delete_volume(volume_id: str) -> None:
+    call("DELETE", f"/networkvolumes/{volume_id}")
+    print(f"deleted network volume {volume_id}")
 
 
 def list_resources() -> None:
@@ -130,8 +170,16 @@ if __name__ == "__main__":
             create_volume()
         case ["template", image]:
             create_template(image)
-        case ["endpoint", volume_id, template_id]:
-            create_endpoint(volume_id, template_id)
+        case ["endpoint", template_id]:
+            create_endpoint(template_id)
+        case ["endpoint", template_id, max_workers]:
+            create_endpoint(template_id, int(max_workers))
+        case ["set-workers", endpoint_id, max_workers]:
+            set_workers(endpoint_id, int(max_workers))
+        case ["delete-endpoint", endpoint_id]:
+            delete_endpoint(endpoint_id)
+        case ["delete-volume", volume_id]:
+            delete_volume(volume_id)
         case ["list"]:
             list_resources()
         case _:

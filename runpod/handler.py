@@ -5,8 +5,9 @@ Output: {"audio_base64": str, "sample_rate": int, ...metrics}
 
 The model MUST be the Turbo variant — it is the only Chatterbox model that
 renders paralinguistic tags ([sigh], [laugh], ...) instead of reading them
-aloud. HF_HOME points at the attached Network Volume so weights download
-once, not per cold start.
+aloud. HF_HOME points at an in-image cache (/opt/hf) where the Turbo
+weights are baked at build time, so the endpoint needs no region-locked
+network volume and can run in any datacenter.
 """
 
 import base64
