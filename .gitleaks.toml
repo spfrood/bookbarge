@@ -1,0 +1,59 @@
+# Repo-level secret + PII rules. Mirrors ~/.config/gitleaks.toml on the dev box
+# so local pre-commit and GitHub CI agree. Keep the two in sync.
+title = "secret + PII rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "pii-email-address"
+description = "Personal email address (PII)"
+regex = '''[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'''
+tags = ["pii", "email"]
+
+  [rules.allowlist]
+  regexes = [
+    '''[a-zA-Z0-9._%+\-]+@users\.noreply\.github\.com''',
+    '''[^@\s]+@(example|test|localhost|domain|email|yourdomain|acme|foo|bar)\.(com|org|net|invalid|local|test)''',
+    '''(noreply|no-reply|donotreply|support|admin|info|hello|contact|security|abuse|send|notice|notify|alerts?|notifications?|billing|help|team|postmaster|webmaster)@''',
+    '''@(sentry|npmjs|github|nodejs)\.''',
+    '''\b[a-z]@[a-z]\.(com|org|net)\b''',
+    '''(user|you|someone|name|first\.last|me)@''',
+    '''@(signalreport\.tips|gung\.foo)''',
+  ]
+  paths = [
+    '''package-lock\.json''',
+    '''(^|/)LICENSE(\.[a-zA-Z]+)?$''',
+    '''(^|/)CHANGELOG\.md$''',
+    '''\.lock$''',
+    '''\.env\.(example|sample|template|dist)$''',
+  ]
+
+[[rules]]
+id = "pii-phone-number"
+description = "Phone number (PII)"
+regex = '''(?:\+?1[ .\-]?)?\(?\d{3}\)?[ .\-]\d{3}[ .\-]\d{4}\b'''
+tags = ["pii", "phone"]
+
+[[rules]]
+id = "pii-ssn"
+description = "US Social Security number (PII)"
+regex = '''\b\d{3}-\d{2}-\d{4}\b'''
+tags = ["pii", "ssn"]
+
+[allowlist]
+description = "Paths and patterns never worth scanning"
+regexes = [
+  '''process\.env\.[A-Z0-9_]+''',
+  '''os\.environ(\.get)?\(?['"][A-Z0-9_]+['"]''',
+  '''(replace|change|your|insert|put)[-_](me|this|with)[-_a-z0-9]*''',
+  '''<[A-Za-z0-9_\- ]+>''',
+]
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''\.min\.(js|css)$''',
+  '''\.map$''',
+]
