@@ -90,6 +90,12 @@
   <p class="muted">Click a chapter's name to edit its text, retitle it, or
   fix individual chunks (regenerating just one line instead of the whole
   chapter).</p>
+  <p class="muted"><strong>Generating a chapter takes time.</strong> The audio
+  is produced on cloud GPUs chunk by chunk, so how long it takes depends on
+  the chapter's length — a short chapter finishes in a couple of minutes, but
+  a long one can take <strong>10 minutes or more</strong>. Progress updates
+  here automatically, and you can leave this page and come back; the audio
+  appears when it's ready.</p>
   <table class="listing" id="chapters"
          data-project-id="{{ project['id'] }}"
          data-generating="{{ 1 if generating or assembling else 0 }}">
